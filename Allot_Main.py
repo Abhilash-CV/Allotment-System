@@ -130,7 +130,7 @@ def login_page():
     if st.button("Login", use_container_width=True):
         if username in VALID_USERS and VALID_USERS[username] == password:
             st.session_state.logged_in = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("❌ Invalid username or password")
 
@@ -175,7 +175,7 @@ def main_app():
 
         if st.sidebar.button(label, key=f"menu_{key}", use_container_width=True):
             st.session_state.menu_choice = key
-            st.experimental_rerun()
+            st.rerun()
 
         st.sidebar.markdown(
             f"<script>"
@@ -188,7 +188,7 @@ def main_app():
     # ----- LOGOUT BUTTON -----
     if st.sidebar.button("🚪 Logout", key="logout", use_container_width=True):
         st.session_state.logged_in = False
-        st.experimental_rerun()
+        st.rerun()
 
     # ----- PAGE ROUTING -----
     selected = st.session_state.menu_choice
