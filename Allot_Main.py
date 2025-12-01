@@ -31,12 +31,7 @@ def login_page():
             st.error("Invalid username or password")
 
 
-# ----------------------------------------------------
-# PGA MODULE (Placeholder)
-# ----------------------------------------------------
-def pga_module():
-    st.title("🎓 PGA Module")
-    st.info("PGA program will be added soon.")
+
 
 
 # ----------------------------------------------------
@@ -48,10 +43,10 @@ def main_app():
 
     menu = st.sidebar.radio("Select Program", ["PGA", "DNM", "Future Program 1"])
 
-    if menu == "PGA":
-        pga_module()
+    if menu == "DNM":
+        dnm_allotment()
 
-    elif menu == "DNM":
+    elif menu == "PGA":
         dnm_allotment()   # ← CALL DNM MODULE
 
     else:
