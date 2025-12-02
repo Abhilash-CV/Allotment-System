@@ -29,9 +29,9 @@ CLEAN_CSS = """
 
     /* Login Card */
     .login-card {
-        width: 380px;
+        width: 300px;
         background: #ffffff;
-        padding: 35px 32px;
+        padding: 20px 20px;
         border-radius: 15px;
         box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
         text-align: left;
