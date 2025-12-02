@@ -41,49 +41,76 @@ def eligible_category(seat_cat: str, cand_cat: str) -> bool:
 # ---------------------------------------------------------
 # Special rules for NR / NC / NM / AC / MM / PD / CD
 # ---------------------------------------------------------
-def passes_special_rules(seat_cat: str, flag: str, C: pd.Series) -> bool:
+def passes_special_rules(seat_cat, flag, C):
     seat_cat = str(seat_cat).upper().strip()
-    flag = str(flag).upper().strip()
+    flag     = str(flag).upper().strip()
 
     cand_nri = str(C.get("NRI", "")).upper().strip()
     cand_min = str(C.get("Minority", "")).upper().strip()
     cand_sp3 = str(C.get("Special3", "")).upper().strip()
     cand_cat = str(C.get("Category", "")).upper().strip()
 
-    # ---------- NRI seats ----------
-    # Case 1: Seat = NR, NRI = NR, option flag = R
+    # ---------------------------------------------------------
+    # Case 1: NRI seat NR
+    # Option must end with 'R'
+    # Candidate NRI = NR
+    # ---------------------------------------------------------
     if seat_cat == "NR":
         return (flag == "R" and cand_nri == "NR")
 
-    # Case 4 (your note) : Seat = NC, NRI = NRNC, option flag = R
+    # ---------------------------------------------------------
+    # Case 4: NRI category NC
+    # Option must end with 'R'
+    # Candidate NRI = NRNC
+    # ---------------------------------------------------------
     if seat_cat == "NC":
         return (flag == "R" and cand_nri == "NRNC")
 
-    # NM seats → NRI = NM, option flag = R  (you confirmed NM = R)
+    # ---------------------------------------------------------
+    # Case 1 extension: NM seat
+    # Option ends with 'R'
+    # Candidate NRI = NM
+    # (You confirmed NM = R rule)
+    # ---------------------------------------------------------
     if seat_cat == "NM":
         return (flag == "R" and cand_nri == "NM")
 
-    # ---------- Minority seats ----------
-    # Case 2 & your note: AC minority
+    # ---------------------------------------------------------
+    # Case 2: Minority AC seat
+    # Option must end with 'Y'
+    # Candidate Minority = AC
+    # ---------------------------------------------------------
     if seat_cat == "AC":
         return (flag == "Y" and cand_min == "AC")
 
-    # Case 3: MM minority
+    # ---------------------------------------------------------
+    # Case 3: Minority MM seat
+    # Option must end with 'Y'
+    # Candidate Minority = MM
+    # ---------------------------------------------------------
     if seat_cat == "MM":
         return (flag == "Y" and cand_min == "MM")
 
-    # ---------- PD seats ----------
-    # Case 5: PD
+    # ---------------------------------------------------------
+    # Case 5: PD seats
+    # Candidate Special3 = PD
+    # ---------------------------------------------------------
     if seat_cat == "PD":
         return (cand_sp3 == "PD")
 
-    # ---------- CD seats ----------
-    # Case 6: CD = SC + PD
+    # ---------------------------------------------------------
+    # Case 6: CD seats
+    # Candidate Category = SC AND Special3 = PD
+    # ---------------------------------------------------------
     if seat_cat == "CD":
         return (cand_cat == "SC" and cand_sp3 == "PD")
 
-    # All other categories have no extra special rule
+    # ---------------------------------------------------------
+    # All other seats (SM, EZ, MU, etc.)
+    # No special rule required
+    # ---------------------------------------------------------
     return True
+
 
 
 # ---------------------------------------------------------
