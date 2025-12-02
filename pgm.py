@@ -5,96 +5,156 @@ from collections import defaultdict
 
 
 # ==========================================================
-# Read any file (CSV / Excel)
+# Generic reader for CSV / Excel
 # ==========================================================
 def read_any(f):
-    fname = f.name.lower()
-    if fname.endswith(".xlsx") or fname.endswith(".xls"):
+    name = f.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
         return pd.read_excel(f)
     return pd.read_csv(f, encoding="ISO-8859-1", on_bad_lines="skip")
 
 
 # ==========================================================
-# CATEGORY ELIGIBLE CHECK
+# Basic category eligibility (generic rules)
 # ==========================================================
 def eligible_category(seat_cat, cand_cat):
-
     seat_cat = str(seat_cat).upper().strip()
     cand_cat = str(cand_cat).upper().strip()
 
-    if cand_cat in ("", "NA", "NULL"):
+    if cand_cat in ("", "NULL", "NA"):
         cand_cat = "NA"
 
-    # Quota categories based on rank only
+    # Quota categories – controlled by ranks, not community
     if seat_cat in ("HQ", "MQ", "IQ"):
         return True
 
-    # SM open to all
+    # SM is open to all
     if seat_cat == "SM":
         return True
 
-    # NA candidates only eligible for SM
+    # Special categories – further filtered by passes_special_rules
+    if seat_cat in ("PD", "CD", "AC", "MM", "NR", "NC"):
+        return True
+
+    # NA candidate cannot take community seats
     if cand_cat == "NA":
         return False
 
+    # Normal community seat
     return seat_cat == cand_cat
 
 
 # ==========================================================
-# Decode PG Option Format
-# Optn = M G CC CCC F
-#        0 1 2  4  7
+# Special rules – NRI / Minority / PD / CD etc.
+# ==========================================================
+def passes_special_rules(seat_cat, flag, c_row):
+    """
+    c_row is a row from candidates (itertuples), with fields:
+    NRI, Minority, Special3, Category, etc.
+    """
+
+    seat_cat = str(seat_cat).upper().strip()
+    flag = str(flag).upper().strip()
+
+    # Extract candidate fields safely
+    cand_nri = str(getattr(c_row, "NRI", "")).upper().strip()
+    cand_min = str(getattr(c_row, "Minority", "")).upper().strip()
+    cand_sp3 = str(getattr(c_row, "Special3", "")).upper().strip()
+    cand_cat = str(getattr(c_row, "Category", "")).upper().strip()
+
+    # ---- Case 1: NRI seat NR ----
+    # Option last digit R, Seat = NR, Candidate NRI = NR
+    if seat_cat == "NR":
+        if flag != "R" or cand_nri != "NR":
+            return False
+
+    # ---- Case 4: NRI seat NC ----
+    # Option last digit R, Seat = NC, Candidate NRI = NRNC
+    if seat_cat == "NC":
+        if flag != "R" or cand_nri != "NRNC":
+            return False
+
+    # ---- Case 2: Minority AC ----
+    # Seat = AC, Option last digit Y (candidate must be AC-community)
+    if seat_cat == "AC":
+        if flag != "Y":
+            return False
+        # Optional extra: require category = AC
+        if cand_cat not in ("AC",):
+            return False
+
+    # ---- Case 3: Minority MM ----
+    # Candidate.Minority = MM, Seat = MM, Option last digit Y
+    if seat_cat == "MM":
+        if flag != "Y" or cand_min != "MM":
+            return False
+
+    # ---- Case 5: PD ----
+    # Seat = PD, Candidate.Special3 = PD
+    if seat_cat == "PD":
+        if cand_sp3 != "PD":
+            return False
+
+    # ---- Case 6: CD ----
+    # Seat = CD, Candidate.Category = SC and Special3 = PD
+    if seat_cat == "CD":
+        if not (cand_cat == "SC" and cand_sp3 == "PD"):
+            return False
+
+    # For all other categories – no special restriction
+    return True
+
+
+# ==========================================================
+# Decode 8-char PG option
 # ==========================================================
 def decode_opt(opt):
     opt = str(opt).upper().strip()
     if len(opt) != 8:
         return None
-
     return {
         "prog": opt[0],        # M
-        "typ": opt[1],         # G or S
-        "course": opt[2:4],    # CC (2 chars)
-        "college": opt[4:7],   # COL (3 chars)
-        "flag": opt[7]         # M/Y/N
+        "typ": opt[1],         # G/S
+        "course": opt[2:4],    # 2 letters
+        "college": opt[4:7],   # 3 letters
+        "flag": opt[7],        # M / Y / R / N
     }
 
 
 # ==========================================================
-# FINAL PG ALLOT CODE (11 CHARACTERS)
-# MG + CC(2) + COL(3) + CATCAT (4)
+# 11-char Allotment Code: MG + CC + COL + CATCAT
 # ==========================================================
 def make_allot_code(prog, typ, course, college, category):
-    cat = category[:2].upper()
-    cat4 = cat + cat
+    cat2 = category[:2].upper()
+    cat4 = cat2 + cat2
     return f"{prog}{typ}{course}{college}{cat4}"
 
 
 # ==========================================================
-# MAIN FUNCTION
+# MAIN STREAMLIT APP FUNCTION
 # ==========================================================
 def pg_med_allotment():
+    st.title("🩺 PG Medical Allotment – Special Rules + Detail Report")
 
-    st.title("🩺 PG Medical Allotment (11-digit Format, Optimized + Diagnostics)")
-
-    cand_file = st.file_uploader("1️⃣ Upload Candidates File", type=["csv", "xlsx"])
-    seat_file = st.file_uploader("2️⃣ Upload Seat Matrix File", type=["csv", "xlsx"])
-    opt_file  = st.file_uploader("3️⃣ Upload Option Entry File", type=["csv", "xlsx"])
+    cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
+    seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"])
+    opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"])
 
     if not (cand_file and seat_file and opt_file):
         return
 
-    # ---------------- LOAD FILES ----------------
+    # ---------- LOAD ----------
     cand = read_any(cand_file)
     seats = read_any(seat_file)
     opts = read_any(opt_file)
-
     st.success("Files loaded successfully!")
 
-    # ---------- DIAGNOSTICS ----------
+    # ---------- INPUT SUMMARY ----------
     st.write("🔢 Candidates:", len(cand))
     st.write("🗂 Options:", len(opts))
     st.write("📦 Seat Rows:", len(seats))
-    st.write("🪑 Total SEAT Capacity:", int(seats["SEAT"].fillna(0).sum()))
+    if "SEAT" in seats.columns:
+        st.write("🪑 Total SEAT Capacity:", int(seats["SEAT"].fillna(0).sum()))
 
     # ----------------------------------------------------------
     # CLEAN CANDIDATES
@@ -109,19 +169,24 @@ def pg_med_allotment():
 
     if "Category" not in cand.columns:
         cand["Category"] = "NA"
-
     cand["Category"] = cand["Category"].astype(str).str.upper().fillna("NA")
 
-    # Safe handling of missing columns
-    if "CheckMinority" not in cand.columns:
-        cand["CheckMinority"] = ""
+    # Ensure special columns exist
+    if "NRI" not in cand.columns:
+        cand["NRI"] = ""
+    if "Minority" not in cand.columns:
+        cand["Minority"] = ""
+    if "Special3" not in cand.columns:
+        cand["Special3"] = ""
     if "Status" not in cand.columns:
         cand["Status"] = ""
 
-    cand["CheckMinority"] = cand["CheckMinority"].astype(str).str.upper()
+    cand["NRI"] = cand["NRI"].astype(str).str.upper()
+    cand["Minority"] = cand["Minority"].astype(str).str.upper()
+    cand["Special3"] = cand["Special3"].astype(str).str.upper()
     cand["Status"] = cand["Status"].astype(str).str.upper()
 
-    # Remove Status=S and PRank=0
+    # Remove ineligible candidates
     cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")].copy()
     cand = cand.sort_values("PRank").reset_index(drop=True)
 
@@ -140,21 +205,23 @@ def pg_med_allotment():
     opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
     opts = opts.sort_values(["RollNo", "OPNO"]).reset_index(drop=True)
 
-    # Build index for fast lookup
+    # Index: RollNo -> list of options
     opts_by_roll = defaultdict(list)
     for row in opts.itertuples(index=False):
         opts_by_roll[row.RollNo].append(row)
 
     # ----------------------------------------------------------
-    # CLEAN & INDEX SEAT MATRIX
+    # CLEAN SEAT MATRIX
     # ----------------------------------------------------------
     for col in ["grp", "typ", "college", "course", "category"]:
         seats[col] = seats[col].astype(str).str.upper().str.strip()
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
-    seat_map = {}   # (grp, typ, course, college, category) -> seats
-    seat_groups = defaultdict(set)  # (grp, typ, course, college) -> categories
+    # seat_map: (grp, typ, course, college, category) -> remaining seats
+    seat_map = {}
+    # seat_groups: (grp, typ, course, college) -> set(categories)
+    seat_groups = defaultdict(set)
 
     for r in seats.itertuples(index=False):
         key = (r.grp, r.typ, r.course, r.college, r.category)
@@ -163,59 +230,65 @@ def pg_med_allotment():
         gkey = (r.grp, r.typ, r.course, r.college)
         seat_groups[gkey].add(r.category)
 
+    # Also keep original seat summary for detail report
+    seat_summary = (
+        seats.groupby(["college", "course", "typ", "category"], as_index=False)["SEAT"]
+        .sum()
+        .rename(
+            columns={
+                "college": "CollegeCode",
+                "course": "CourseCode",
+                "typ": "CollegeType",
+                "category": "CategoryCode",
+                "SEAT": "SeatTotal",
+            }
+        )
+    )
+
     # ----------------------------------------------------------
-    # RUN ALLOTMENT (FAST)
+    # RUN ALLOTMENT
     # ----------------------------------------------------------
     allotments = []
 
     for c in cand.itertuples(index=False):
-
         roll = c.RollNo
         cand_cat = c.Category
         hq = c.HQ_Rank
         mq = c.MQ_Rank
         iq = c.IQ_Rank
-        strank = c.STRank
-        minority = (c.CheckMinority == "Y")
 
         myopts = opts_by_roll.get(roll)
         if not myopts:
             continue
 
         for op in myopts:
-
             dec = decode_opt(op.Optn)
             if not dec:
                 continue
 
-            prog = dec["prog"]       # M
-            typ = dec["typ"]         # G/S
-            course = dec["course"]   # CC
-            college = dec["college"] # COL3
-            flag = dec["flag"]       # M/Y/N
+            prog = dec["prog"]      # M
+            typ = dec["typ"]        # G/S
+            course = dec["course"]
+            college = dec["college"]
+            flag = dec["flag"].upper()
 
-            # Map prog to seat grp (PGM and PGS only)
-            grp = "PG" + prog    # M -> PGM, S -> PGS
+            # Map prog to seat grp: M -> PGM, S -> PGS
+            grp = "PG" + prog
 
-            # Service quota
-            if flag == "M" and strank <= 0:
+            base_key = (grp, typ, course, college)
+            if base_key not in seat_groups:
                 continue
 
-            # Minority quota
-            if flag == "Y" and not minority:
-                continue
+            available_cats = seat_groups[base_key]
 
-            seat_key_base = (grp, typ, course, college)
-            if seat_key_base not in seat_groups:
-                continue
-
-            available_cats = seat_groups[seat_key_base]
-
+            # Build priority order
             priority = []
 
+            # 1. exact community if present
             if cand_cat not in ("NA", "NULL", "") and cand_cat in available_cats:
                 priority.append(cand_cat)
 
+            # 2. HQ / MQ / IQ
             if "HQ" in available_cats and hq > 0:
                 priority.append("HQ")
             if "MQ" in available_cats and mq > 0:
@@ -223,7 +296,14 @@ def pg_med_allotment():
             if "IQ" in available_cats and iq > 0:
                 priority.append("IQ")
 
-            if "SM" in available_cats:
+            # 3. special categories (order can be tuned)
+            special_order = ["PD", "CD", "AC", "MM", "NR", "NC"]
+            for sc in special_order:
+                if sc in available_cats and sc not in priority:
+                    priority.append(sc)
+
+            # 4. SM last
+            if "SM" in available_cats and "SM" not in priority:
                 priority.append("SM")
 
             chosen_cat = None
@@ -232,10 +312,14 @@ def pg_med_allotment():
             for sc in priority:
                 skey = (grp, typ, course, college, sc)
 
+                # no seats left
                 if seat_map.get(skey, 0) <= 0:
                     continue
 
+                # basic + special eligibility
                 if not eligible_category(sc, cand_cat):
+                    continue
+                if not passes_special_rules(sc, flag, c):
                     continue
 
                 chosen_cat = sc
@@ -243,50 +327,87 @@ def pg_med_allotment():
                 break
 
             if not chosen_cat:
-                continue
+                continue  # try next option
 
             # Deduct seat
             seat_map[chosen_key] -= 1
 
+            # Allot code
             allot_code = make_allot_code(prog, typ, course, college, chosen_cat)
 
-            allotments.append({
-                "RollNo": roll,
-                "OPNO": op.OPNO,
-                "AllotCode": allot_code,
-                "College": college,
-                "Course": course,
-                "SeatCategory": chosen_cat
-            })
+            allotments.append(
+                {
+                    "RollNo": roll,
+                    "OPNO": op.OPNO,
+                    "AllotCode": allot_code,
+                    "College": college,
+                    "Course": course,
+                    "SeatCategory": chosen_cat,
+                }
+            )
 
-            break  # move to next candidate
+            break  # stop at first successful allotment
 
     # ----------------------------------------------------------
-    # OUTPUT RESULT
+    # ALLOTMENT RESULT
     # ----------------------------------------------------------
     result = pd.DataFrame(allotments)
 
-    st.subheader("🟩 Allotment Completed")
-    st.write("🧍 Total Allotted Candidates:", len(result))
+    st.subheader("🟩 Allotment Result")
+    st.write("Total Allotted Candidates:", len(result))
     st.dataframe(result)
+
+    # ----------------------------------------------------------
+    # DETAILED SEAT REPORT (like manual)
+    # ----------------------------------------------------------
+    # admitted summary: count of allotments for each (college, course, category)
+    if not result.empty:
+        admitted = (
+            result.groupby(["College", "Course", "SeatCategory"], as_index=False)
+            .size()
+            .rename(
+                columns={
+                    "College": "CollegeCode",
+                    "Course": "CourseCode",
+                    "SeatCategory": "CategoryCode",
+                    "size": "AdmittedTotal",
+                }
+            )
+        )
+    else:
+        admitted = pd.DataFrame(
+            columns=["CollegeCode", "CourseCode", "CategoryCode", "AdmittedTotal"]
+        )
+
+    detail = seat_summary.merge(
+        admitted,
+        on=["CollegeCode", "CourseCode", "CategoryCode"],
+        how="left",
+    )
+    detail["AdmittedTotal"] = detail["AdmittedTotal"].fillna(0).astype(int)
+    detail["Unallotted"] = detail["SeatTotal"] - detail["AdmittedTotal"]
+
+    st.subheader("📊 Detailed Seat Report (Manual Style)")
+    st.dataframe(detail)
 
     # ----------------------------------------------------------
     # REMAINING SEAT DIAGNOSTICS
     # ----------------------------------------------------------
-    rem = []
-    for (grp, typ, course, college, cat), rem_count in seat_map.items():
-        if rem_count > 0:
-            rem.append({
-                "grp": grp,
-                "typ": typ,
-                "course": course,
-                "college": college,
-                "category": cat,
-                "RemainingSeat": rem_count
-            })
+    rem_rows = []
+    for (grp, typ, course, college, cat), rem in seat_map.items():
+        if rem > 0:
+            rem_rows.append(
+                {
+                    "grp": grp,
+                    "typ": typ,
+                    "CollegeCode": college,
+                    "CourseCode": course,
+                    "CategoryCode": cat,
+                    "RemainingSeat": rem,
+                }
+            )
 
-    rem_df = pd.DataFrame(rem)
-
+    rem_df = pd.DataFrame(rem_rows)
     st.subheader("🪑 Remaining Seat Summary (After Allotment)")
     if rem_df.empty:
         st.success("All seats fully utilized.")
@@ -295,15 +416,26 @@ def pg_med_allotment():
         st.dataframe(rem_df)
 
     # ----------------------------------------------------------
-    # DOWNLOAD RESULT
+    # DOWNLOADS
     # ----------------------------------------------------------
-    buf = BytesIO()
-    result.to_csv(buf, index=False)
-    buf.seek(0)
-
+    # Allotment result
+    buf1 = BytesIO()
+    result.to_csv(buf1, index=False)
+    buf1.seek(0)
     st.download_button(
-        "⬇ Download PG Allotment Result",
-        buf,
-        "PG_Allotment.csv",
-        "text/csv"
+        "⬇ Download Allotment Result CSV",
+        buf1,
+        "PG_Allotment_Result.csv",
+        "text/csv",
+    )
+
+    # Detailed seat report
+    buf2 = BytesIO()
+    detail.to_csv(buf2, index=False)
+    buf2.seek(0)
+    st.download_button(
+        "⬇ Download Detailed Seat Report CSV",
+        buf2,
+        "PG_Detailed_Seat_Report.csv",
+        "text/csv",
     )
