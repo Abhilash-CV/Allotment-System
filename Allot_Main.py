@@ -228,31 +228,48 @@ if "menu_choice" not in st.session_state:
 #            LOGIN PAGE
 # ==========================================
 def login_page():
-    # Theme selector (top center small)
-    c1, c2, c3 = st.columns([2, 3, 2])
-    with c2:
-        theme_choice = st.selectbox(
-            "Theme",
+
+    inject_theme_css(st.session_state.theme)
+
+    # =====================================================
+    #   TOP BAR (THEME SELECTOR LEFT + LOGIN INPUTS RIGHT)
+    # =====================================================
+    st.markdown("""
+        <div class="top-bar">
+            <div class="theme-box">
+                <span style="color:white; font-weight:600;">🎨 Theme</span>
+            </div>
+
+            <div class="top-input-box">
+    """, unsafe_allow_html=True)
+
+    # TOP-RIGHT SMALL LOGIN INPUTS
+    col1, col2, col3 = st.columns([1.4, 1.4, 0.8])
+    with col1:
+        username = st.text_input("User", key="top_user", label_visibility="collapsed")
+    with col2:
+        password = st.text_input("Pass", type="password", key="top_pass", label_visibility="collapsed")
+    with col3:
+        top_login_click = st.button("Login", key="top_login_btn")
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # Theme selector interactive (top-left)
+    with st.container():
+        selected_theme = st.selectbox(
+            "",
             THEMES,
             index=THEMES.index(st.session_state.theme),
-            key="theme_choice_login",
+            key="theme_selector_top",
+            label_visibility="collapsed"
         )
-    st.session_state.theme = theme_choice
-    inject_theme_css(theme_choice)
+    st.session_state.theme = selected_theme
 
-    # Floating shapes HTML
-    st.markdown(
-        """
-        <div class="floating-shape shape1"></div>
-        <div class="floating-shape shape2"></div>
-        <div class="floating-shape shape3"></div>
-        """,
-        unsafe_allow_html=True,
-    )
 
-    # Lottie + login card wrapper
-    st.markdown(
-        """
+    # =====================================================
+    #      CENTER LOGIN CARD WITH LOTTIE ANIMATION
+    # =====================================================
+    st.markdown("""
         <div class="login-overlay">
             <div class="login-wrapper">
                 <div class="login-card">
@@ -261,41 +278,25 @@ def login_page():
                         <lottie-player src="https://assets1.lottiefiles.com/private_files/lf30_t26law.json"
                                        background="transparent"
                                        speed="1"
-                                       style="width: 130px; height: 130px; margin: auto;"
+                                       style="width: 120px; height: 120px; margin: auto;"
                                        loop autoplay>
                         </lottie-player>
                     </div>
-                    <div class="login-icon"></div>
-                    <div class="login-title">Secure Login</div>
-                    <div class="login-subtitle">Admission Management System</div>
-        """,
-        unsafe_allow_html=True,
-    )
+                    <h2>Secure Login</h2>
+                    <p>Admission Management System</p>
+                </div>
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 
-    # Inputs + button are injected inside card
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    st.markdown("<div class='login-btn'>", unsafe_allow_html=True)
-    login_clicked = st.button("Login", use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # Close card + wrappers
-    st.markdown(
-        """
-                </div> <!-- .login-card -->
-            </div> <!-- .login-wrapper -->
-        </div> <!-- .login-overlay -->
-        """,
-        unsafe_allow_html=True,
-    )
-
-    if login_clicked:
+    # If top-right login clicked
+    if top_login_click:
         if username in VALID_USERS and VALID_USERS[username] == password:
             st.session_state.logged_in = True
             st.experimental_rerun()
         else:
             st.error("❌ Invalid username or password")
+
 
 
 # ==========================================
