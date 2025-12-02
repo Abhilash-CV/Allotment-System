@@ -1,5 +1,6 @@
 import streamlit as st
 from dnm import dnm_allotment
+from pga_stray import pga_allotment
 
 # ==========================================
 #            PAGE CONFIG
