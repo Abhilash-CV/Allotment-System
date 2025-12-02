@@ -2,6 +2,7 @@ import streamlit as st
 from dnm import dnm_allotment
 from pga_stray import pga_allotment
 
+
 # ==========================================
 #            PAGE CONFIG
 # ==========================================
@@ -9,30 +10,77 @@ st.set_page_config(page_title="Admission System", layout="wide", page_icon="🎓
 
 
 # ==========================================
-#            CUSTOM UI THEME
+#            MODERN LOGIN + UI THEME CSS
 # ==========================================
 CUSTOM_CSS = """
 <style>
 
-    /* Remove Streamlit default menu/footer */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
 
-    /* Smooth animation */
-    * { transition: all 0.25s ease-in-out; }
-
-    /* APP HEADER */
-    .app-header {
-        background: linear-gradient(90deg, #0052A2, #0088F0);
-        padding: 18px;
-        border-radius: 10px;
-        margin-bottom: 15px;
+    /* Background gradient for login page */
+    .main {
+        background: linear-gradient(135deg, #0052A2 0%, #00A4E4 100%);
+        min-height: 100vh;
     }
-    .app-header h1 {
-        color: white;
-        font-size: 30px;
-        font-weight: bold;
+
+    /* Centered wrapper */
+    .center-wrapper {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 90vh;
+    }
+
+    /* LOGIN CARD */
+    .login-card {
+        width: 420px;
+        padding: 40px 35px;
+        border-radius: 20px;
+        background: white;
+        box-shadow: 0px 8px 25px rgba(0,0,0,0.18);
         text-align: center;
+        animation: fadeIn 0.7s ease-in-out;
+    }
+
+    .login-icon {
+        font-size: 55px;
+        margin-bottom: 10px;
+        color: #0052A2;
+    }
+
+    .login-card h2 {
+        font-size: 30px;
+        font-weight: 800;
+        color: #0052A2;
+        margin-bottom: 5px;
+    }
+
+    .login-card p {
+        color: #666;
+        margin-bottom: 20px;
+    }
+
+    /* Login button */
+    .login-btn button {
+        width: 100%;
+        padding: 12px;
+        border-radius: 12px !important;
+        font-size: 17px;
+        font-weight: bold;
+        background: linear-gradient(90deg, #0052A2, #0088F0);
+        color: white !important;
+        border: none;
+    }
+
+    .login-btn button:hover {
+        background: linear-gradient(90deg, #003F7F, #0070C8);
+    }
+
+    /* Fade animation */
+    @keyframes fadeIn {
+        from {opacity: 0; transform: translateY(20px);}
+        to {opacity: 1; transform: translateY(0);}
     }
 
     /* SIDEBAR */
@@ -66,41 +114,6 @@ CUSTOM_CSS = """
         border-color: #004080 !important;
     }
 
-    /* LOGOUT BUTTON */
-    .logout-btn {
-        margin-top: 35px;
-        padding: 12px;
-        background: #ff4b4b;
-        color: white;
-        font-size: 16px;
-        font-weight: 600;
-        border-radius: 10px;
-        text-align: center;
-        cursor: pointer;
-    }
-    .logout-btn:hover {
-        background: #cc0000;
-    }
-
-    /* LOGIN BOX */
-    .login-box {
-        max-width: 420px;
-        margin: auto;
-        margin-top: 140px;
-        padding: 40px;
-        background: white;
-        border-radius: 15px;
-        box-shadow: 0px 4px 18px rgba(0,0,0,0.1);
-        border: 1px solid #ddd;
-    }
-    .login-title {
-        text-align: center;
-        font-size: 28px;
-        font-weight: bold;
-        color: #0052A2;
-        margin-bottom: 25px;
-    }
-
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -116,18 +129,32 @@ VALID_USERS = {
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
 if "menu_choice" not in st.session_state:
     st.session_state.menu_choice = "DNM"
 
 
-# -------------- LOGIN PAGE ---------------
+# ==========================================
+#            LOGIN PAGE
+# ==========================================
 def login_page():
-    st.markdown("<div class='login-box'>", unsafe_allow_html=True)
-    st.markdown("<div class='login-title'>🔐 Login</div>", unsafe_allow_html=True)
 
+    st.markdown("<div class='center-wrapper'>", unsafe_allow_html=True)
+
+    # Card UI
+    st.markdown("""
+        <div class='login-card'>
+            <div class='login-icon'>🔐</div>
+            <h2>Login</h2>
+            <p>Welcome to Admission Management System</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # Inputs OUTSIDE the HTML so Streamlit can render inputs normally
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
+    # Login Button
     if st.button("Login", use_container_width=True):
         if username in VALID_USERS and VALID_USERS[username] == password:
             st.session_state.logged_in = True
@@ -141,11 +168,6 @@ def login_page():
 # ==========================================
 #            PROGRAM MODULES
 # ==========================================
-def pga_module():
-    st.markdown("<div class='app-header'><h1>📘 PGA Program</h1></div>", unsafe_allow_html=True)
-    st.info("PGA program features will be added here.")
-
-
 def future_program():
     st.markdown("<div class='app-header'><h1>🛠 Future Tools</h1></div>", unsafe_allow_html=True)
     st.info("Upcoming modules will appear here.")
@@ -156,14 +178,14 @@ def future_program():
 # ==========================================
 def main_app():
 
-    # ----- HEADER -----
+    # HEADER
     st.markdown("<div class='app-header'><h1>🎓 Admission Management System</h1></div>", unsafe_allow_html=True)
 
-    # ----- SIDEBAR MENU -----
+    # SIDEBAR
     st.sidebar.title("Navigation")
 
     menu_options = {
-        "PGA": "📘 PGA",
+        "PGA": "📘 PGA Allotment",
         "DNM": "🧮 DNM Allotment",
         "Future": "🛠 Future Tools"
     }
@@ -179,25 +201,27 @@ def main_app():
             st.rerun()
 
         st.sidebar.markdown(
-            f"<script>"
-            f"var el = window.parent.document.querySelector('button[data-testid=\"menu_{key}\"]');"
-            f"if (el) el.className = '{css_class}';"
-            f"</script>",
+            f"""
+            <script>
+            let el = window.parent.document.querySelector('button[data-testid="menu_{key}"]');
+            if (el) el.className = '{css_class}';
+            </script>
+            """,
             unsafe_allow_html=True
         )
 
-    # ----- LOGOUT BUTTON -----
+    # LOGOUT BUTTON
     if st.sidebar.button("🚪 Logout", key="logout", use_container_width=True):
         st.session_state.logged_in = False
         st.rerun()
 
-    # ----- PAGE ROUTING -----
-    selected = st.session_state.menu_choice
+    # ROUTING
+    page = st.session_state.menu_choice
 
-    if selected == "PGA":
+    if page == "PGA":
         pga_allotment()
 
-    elif selected == "DNM":
+    elif page == "DNM":
         dnm_allotment()
 
     else:
