@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+st.write("Processing candidates:", len(cand))
+st.write("Options:", len(opts))
+st.write("Seats:", len(seats))
 
 # ==========================================================
 # Read any file (CSV / Excel)
