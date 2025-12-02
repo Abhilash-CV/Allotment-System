@@ -13,7 +13,7 @@ def read_any(f):
 
 
 # ==========================================================
-# CATEGORY ELIGIBLE CHECK
+# CATEGORY ELIGIBLE CHECK  ✅ FIXED
 # ==========================================================
 def eligible_category(seat_cat, cand_cat):
     seat_cat = seat_cat.upper().strip()
@@ -22,14 +22,20 @@ def eligible_category(seat_cat, cand_cat):
     if cand_cat in ("", "NULL", "NA"):
         cand_cat = "NA"
 
+    # Special quota seats are controlled by passes_special_rules(),
+    # not by community category match.
+    if seat_cat in ("NR", "NC", "NM", "AC", "MM", "PD", "CD"):
+        return True
+
     # SM is open to all
     if seat_cat == "SM":
         return True
 
-    # NA candidate only eligible for SM
+    # NA candidate only eligible for SM (and specials above)
     if cand_cat == "NA":
         return False
 
+    # Community quota seats: SC/ST/EZ/MU/etc must match
     return seat_cat == cand_cat
 
 
