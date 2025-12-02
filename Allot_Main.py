@@ -195,7 +195,7 @@ def main_app():
     selected = st.session_state.menu_choice
 
     if selected == "PGA":
-        pga_module()
+        pga_allotment()
 
     elif selected == "DNM":
         dnm_allotment()
