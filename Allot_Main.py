@@ -168,7 +168,7 @@ def main_app():
     menu_options = {
         "PGA": "📘 PGA Allotment",
         "DNM": "🧮 DNM Allotment",
-        "PGM": "📘 PGA Allotment",
+        "PGM": "📘 PGM Allotment",
         "Future": "🛠 Future Tools"
     }
 
