@@ -122,7 +122,7 @@ def make_allot_code(prog, typ, course, college, category):
 # ==========================================================
 def pg_med_allotment():
 
-    st.title("🩺 PG Medical Allotment – Final Version with M-Flag Quota Rule")
+    st.title("🩺 PG Medical Allotment – HQ/MQ/IQ Priority + M-Flag Logic")
 
     cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"])
@@ -151,9 +151,40 @@ def pg_med_allotment():
             cand[col] = ""
         cand[col] = cand[col].astype(str).str.upper()
 
-    # Exclude resigned candidates
-    cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")]
-    cand = cand.sort_values("PRank").reset_index(drop=True)
+    # remove resigned / ineligible
+    cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")].copy()
+
+    # ----------------------------------------------------------
+    # BUILD GLOBAL PROCESSING ORDER (Option B)
+    # Phase 1: HQ_Rank order
+    # Phase 2: MQ_Rank order (remaining)
+    # Phase 3: IQ_Rank order (remaining)
+    # Phase 4: PRank order (remaining)
+    # ----------------------------------------------------------
+    cand_rows = list(cand.itertuples(index=False))
+    order = []
+    used_rolls = set()
+
+    # helper to add a phase
+    def add_phase(rows, rank_attr):
+        nonlocal order, used_rolls
+        phase = [r for r in rows if getattr(r, rank_attr) > 0 and r.RollNo not in used_rolls]
+        phase = sorted(phase, key=lambda r: getattr(r, rank_attr))
+        for r in phase:
+            order.append(r)
+            used_rolls.add(r.RollNo)
+
+    # HQ phase
+    add_phase(cand_rows, "HQ_Rank")
+    # MQ phase
+    add_phase(cand_rows, "MQ_Rank")
+    # IQ phase
+    add_phase(cand_rows, "IQ_Rank")
+
+    # remaining by PRank
+    remaining = [r for r in cand_rows if r.RollNo not in used_rolls]
+    remaining = sorted(remaining, key=lambda r: r.PRank)
+    order.extend(remaining)
 
     # ----------------------------------------------------------
     # CLEAN OPTIONS
@@ -165,9 +196,9 @@ def pg_med_allotment():
         (opts["OPNO"] > 0) &
         (opts["ValidOption"].astype(str).str.upper() == "Y") &
         (opts["Delflg"].astype(str).str.upper() != "Y")
-    ]
+    ].copy()
 
-    opts["Optn"] = opts["Optn"].astype(str).str.upper()
+    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
     opts = opts.sort_values(["RollNo", "OPNO"])
 
     opts_by_roll = defaultdict(list)
@@ -178,7 +209,7 @@ def pg_med_allotment():
     # CLEAN SEAT MATRIX
     # ----------------------------------------------------------
     for col in ["grp", "typ", "college", "course", "category"]:
-        seats[col] = seats[col].astype(str).str.upper()
+        seats[col] = seats[col].astype(str).str.upper().str.strip()
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
@@ -189,15 +220,28 @@ def pg_med_allotment():
         key = (r.grp, r.typ, r.course, r.college, r.category)
         seat_map[key] = seat_map.get(key, 0) + int(r.SEAT)
 
-        group_key = (r.grp, r.typ, r.course, r.college)
-        seat_groups[group_key].add(r.category)
+        gkey = (r.grp, r.typ, r.course, r.college)
+        seat_groups[gkey].add(r.category)
+
+    # seat summary for report
+    seat_grouped = (
+        seats.groupby(["college", "course", "typ", "category"], as_index=False)["SEAT"]
+        .sum()
+        .rename(columns={
+            "college": "CollegeCode",
+            "course": "CourseCode",
+            "typ": "CollegeType",
+            "category": "CategoryCode",
+            "SEAT": "SeatTotal",
+        })
+    )
 
     # ----------------------------------------------------------
-    # RUN ALLOTMENT
+    # RUN ALLOTMENT (USING NEW GLOBAL ORDER)
     # ----------------------------------------------------------
     allotments = []
 
-    for c in cand.itertuples(index=False):
+    for c in order:  # c is a namedtuple row from cand_rows/order
 
         myopts = opts_by_roll.get(c.RollNo)
         if not myopts:
@@ -222,7 +266,7 @@ def pg_med_allotment():
             available = seat_groups[base]
 
             # --------------------------------------------------
-            # PRIORITY LOGIC – Updated with M-flag quota rule
+            # PRIORITY LOGIC – with M-flag rule
             # --------------------------------------------------
             priority = []
 
@@ -231,17 +275,15 @@ def pg_med_allotment():
                 if c.Category not in ("NA", "") and c.Category in available:
                     priority.append(c.Category)
 
-            # Always apply HQ → MQ → IQ
+            # HQ → MQ → IQ always considered next (for any flag)
             if "HQ" in available and c.HQ_Rank > 0:
                 priority.append("HQ")
-
             if "MQ" in available and c.MQ_Rank > 0:
                 priority.append("MQ")
-
             if "IQ" in available and c.IQ_Rank > 0:
                 priority.append("IQ")
 
-            # Special categories (after quotas)
+            # Special categories after quotas
             for sc in ["PD", "CD", "AC", "MM", "NR", "NC", "NM"]:
                 if sc not in available:
                     continue
@@ -254,18 +296,18 @@ def pg_med_allotment():
                 priority.append("SM")
 
             # --------------------------------------------------
-            # TRY ALLOT
+            # TRY TO FIND A SEAT
             # --------------------------------------------------
             chosen = None
+            chosen_key = None
+
             for sc in priority:
                 skey = (grp, typ, course, college, sc)
 
                 if seat_map.get(skey, 0) <= 0:
                     continue
-
                 if not eligible_category(sc, c.Category):
                     continue
-
                 if not passes_special_rules(sc, flag, c):
                     continue
 
@@ -276,10 +318,10 @@ def pg_med_allotment():
             if not chosen:
                 continue
 
-            # Deduct
+            # Deduct seat
             seat_map[chosen_key] -= 1
 
-            # Save
+            # Save allotment
             allotments.append({
                 "RollNo": c.RollNo,
                 "OPNO": op.OPNO,
@@ -289,7 +331,7 @@ def pg_med_allotment():
                 "AllotCode": make_allot_code(dec["prog"], typ, course, college, chosen),
             })
 
-            break
+            break  # stop at first successful option
 
     # ----------------------------------------------------------
     # OUTPUT SECTION
@@ -297,41 +339,55 @@ def pg_med_allotment():
     result = pd.DataFrame(allotments)
 
     st.subheader("🟩 Allotment Result")
+    st.write("Total Allotted:", len(result))
     st.dataframe(result)
 
-    # ----------------------------------------------------------
-    # DETAILED REPORT
-    # ----------------------------------------------------------
-    admitted = (
-        result.groupby(["College", "Course", "SeatCategory"], as_index=False)
-        .size()
-        .rename(columns={"College": "CollegeCode", "Course": "CourseCode",
-                         "SeatCategory": "CategoryCode", "size": "AdmittedTotal"})
-    ) if not result.empty else pd.DataFrame(
-        columns=["CollegeCode", "CourseCode", "CategoryCode", "AdmittedTotal"]
+    # Detailed report
+    if not result.empty:
+        admitted = (
+            result.groupby(["College", "Course", "SeatCategory"], as_index=False)
+            .size()
+            .rename(columns={
+                "College": "CollegeCode",
+                "Course": "CourseCode",
+                "SeatCategory": "CategoryCode",
+                "size": "AdmittedTotal",
+            })
+        )
+    else:
+        admitted = pd.DataFrame(
+            columns=["CollegeCode", "CourseCode", "CategoryCode", "AdmittedTotal"]
+        )
+
+    detail = seat_grouped.merge(
+        admitted,
+        on=["CollegeCode", "CourseCode", "CategoryCode"],
+        how="left",
     )
-
-    seat_grouped = (
-        seats.groupby(["college", "course", "typ", "category"], as_index=False)["SEAT"]
-        .sum()
-        .rename(columns={"college": "CollegeCode", "course": "CourseCode",
-                         "typ": "CollegeType", "category": "CategoryCode",
-                         "SEAT": "SeatTotal"})
-    )
-
-    detail = seat_grouped.merge(admitted, on=[
-        "CollegeCode", "CourseCode", "CategoryCode"
-    ], how="left")
-
     detail["AdmittedTotal"] = detail["AdmittedTotal"].fillna(0).astype(int)
     detail["Unallotted"] = detail["SeatTotal"] - detail["AdmittedTotal"]
 
-    st.subheader("📊 Detailed Seat Matrix Report")
+    st.subheader("📊 Detailed Seat Report")
     st.dataframe(detail)
 
-    # ----------------------------------------------------------
-    # DOWNLOAD BUTTONS
-    # ----------------------------------------------------------
+    # Remaining seats
+    rem_rows = []
+    for (grp, typ, course, college, cat), rem in seat_map.items():
+        if rem > 0:
+            rem_rows.append({
+                "grp": grp,
+                "typ": typ,
+                "CollegeCode": college,
+                "CourseCode": course,
+                "CategoryCode": cat,
+                "RemainingSeat": rem,
+            })
+
+    st.subheader("🪑 Remaining Seats After Allotment")
+    rem_df = pd.DataFrame(rem_rows)
+    st.dataframe(rem_df)
+
+    # Downloads
     b1 = BytesIO()
     result.to_csv(b1, index=False)
     b1.seek(0)
@@ -340,4 +396,4 @@ def pg_med_allotment():
     b2 = BytesIO()
     detail.to_csv(b2, index=False)
     b2.seek(0)
-    st.download_button("⬇ Download Detailed Seat Report", b2, "Seat_Details.csv")
+    st.download_button("⬇ Download Detailed Seat Report CSV", b2, "Seat_Detail.csv")
