@@ -51,6 +51,36 @@ def passes_special_rules(seat_cat, flag, c_row):
     """
     c_row is a row from candidates (itertuples), with fields:
     NRI, Minority, Special3, Category, etc.
+
+    Explicit cases (from your conditions):
+
+    Case 1:
+        Option last digit = R
+        Seat = NR
+        Candidate.NRI = NR
+
+    Case 2:
+        Candidate.Minority = AC
+        Seat = AC
+        Option last digit = Y
+
+    Case 3:
+        Candidate.Minority = MM
+        Seat = MM
+        Option last digit = Y
+
+    Case 4:
+        Option last digit = R
+        Seat = NC
+        Candidate.NRI = NRNC
+
+    Case 5:
+        Seat = PD
+        Candidate.Special3 = PD
+
+    Case 6:
+        Seat = CD
+        Candidate.Category = SC AND Candidate.Special3 = PD
     """
 
     seat_cat = str(seat_cat).upper().strip()
@@ -75,12 +105,11 @@ def passes_special_rules(seat_cat, flag, c_row):
             return False
 
     # ---- Case 2: Minority AC ----
-    # Seat = AC, Option last digit Y (candidate must be AC-community)
+    # Candidate.Minority = AC, Seat = AC, Option last digit Y
     if seat_cat == "AC":
         if flag != "Y":
             return False
-        # Optional extra: require category = AC
-        if cand_cat not in ("AC",):
+        if cand_min != "AC":
             return False
 
     # ---- Case 3: Minority MM ----
@@ -113,11 +142,11 @@ def decode_opt(opt):
     if len(opt) != 8:
         return None
     return {
-        "prog": opt[0],        # M
+        "prog": opt[0],        # M (PGM) / S (PGS) etc.
         "typ": opt[1],         # G/S
         "course": opt[2:4],    # 2 letters
         "college": opt[4:7],   # 3 letters
-        "flag": opt[7],        # M / Y / R / N
+        "flag": opt[7],        # M / Y / R / N, etc.
     }
 
 
@@ -288,7 +317,7 @@ def pg_med_allotment():
             if cand_cat not in ("NA", "NULL", "") and cand_cat in available_cats:
                 priority.append(cand_cat)
 
-            # 2. HQ / MQ / IQ
+            # 2. HQ / MQ / IQ (quota ranks)
             if "HQ" in available_cats and hq > 0:
                 priority.append("HQ")
             if "MQ" in available_cats and mq > 0:
@@ -296,15 +325,24 @@ def pg_med_allotment():
             if "IQ" in available_cats and iq > 0:
                 priority.append("IQ")
 
-            # 3. special categories (order can be tuned)
+            # 3. special categories (with candidate-based filtering)
             special_order = ["PD", "CD", "AC", "MM", "NR", "NC"]
             for sc in special_order:
-                if sc in available_cats and sc not in priority:
-                    priority.append(sc)
+                if sc not in available_cats:
+                    continue
+                if sc in priority:
+                    continue
+                # ensure candidate is eligible + passes special rule
+                if not eligible_category(sc, cand_cat):
+                    continue
+                if not passes_special_rules(sc, flag, c):
+                    continue
+                priority.append(sc)
 
-            # 4. SM last
+            # 4. SM last (open seat)
             if "SM" in available_cats and "SM" not in priority:
-                priority.append("SM")
+                if eligible_category("SM", cand_cat) and passes_special_rules("SM", flag, c):
+                    priority.append("SM")
 
             chosen_cat = None
             chosen_key = None
@@ -316,7 +354,7 @@ def pg_med_allotment():
                 if seat_map.get(skey, 0) <= 0:
                     continue
 
-                # basic + special eligibility
+                # basic + special eligibility (redundant but safe)
                 if not eligible_category(sc, cand_cat):
                     continue
                 if not passes_special_rules(sc, flag, c):
