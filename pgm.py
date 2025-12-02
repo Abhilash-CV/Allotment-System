@@ -2,279 +2,249 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-# ==========================================================
-# Read CSV/Excel
-# ==========================================================
-def read_any(f):
-    name = f.name.lower()
+# ----------------------------------------------------------
+# Read any data file
+# ----------------------------------------------------------
+def read_any(file):
+    name = file.name.lower()
     if name.endswith(".xlsx") or name.endswith(".xls"):
-        return pd.read_excel(f)
-    return pd.read_csv(f, encoding="ISO-8859-1", on_bad_lines="skip")
+        return pd.read_excel(file)
+    return pd.read_csv(file, encoding="ISO-8859-1", on_bad_lines="skip")
 
 
-# ==========================================================
-# CATEGORY ELIGIBLE CHECK
-# ==========================================================
-def eligible_category(seat_cat, cand_cat):
-    seat_cat = seat_cat.upper().strip()
-    cand_cat = cand_cat.upper().strip()
-
-    if cand_cat in ("", "NULL", "NA"):
-        cand_cat = "NA"
-
-    # SM is open to all
-    if seat_cat == "SM":
-        return True
-
-    # NA candidate only eligible for SM
-    if cand_cat == "NA":
-        return False
-
-    return seat_cat == cand_cat
-
-
-# ==========================================================
-# Decode Option — PG Format (8 characters)
-# ==========================================================
+# ----------------------------------------------------------
+# Decode 8-digit PG option
+# ----------------------------------------------------------
 def decode_opt(opt):
-    opt = str(opt).upper().strip()
+    opt = str(opt).strip().upper()
     if len(opt) != 8:
         return None
     return {
-        "prog": opt[0],        # M
-        "typ": opt[1],         # G/S
-        "course": opt[2:4],    # Course
-        "college": opt[4:7],   # College
-        "flag": opt[7]         # M/Y/R/N
+        "prog": opt[0],          # M
+        "typ": opt[1],           # G/S
+        "course": opt[2:4],      # 2 chars
+        "college": opt[4:7],     # 3 chars
+        "flag": opt[7]           # M/Y/R/Q
     }
 
 
-# ==========================================================
-# FINAL 11-DIGIT ALLOT CODE
-# MG + CC(2) + COL(3) + CAT(4)
-# ==========================================================
-def make_allot_code(prog, typ, course, college, category):
-    cat2 = category[:2].upper()
-    cat4 = cat2 + cat2
-    return f"{prog}{typ}{course}{college}{cat4}"
+# ----------------------------------------------------------
+# Make final 11-digit allotment code
+# ----------------------------------------------------------
+def make_allot_code(p, t, c, clg, cat):
+    c2 = cat[:2].upper()
+    return f"{p}{t}{c}{clg}{c2}{c2}"
 
 
-# ==========================================================
-# SPECIAL RULES (NR/NC/NM, AC/MM, PD, CD)
-# ==========================================================
-def passes_special_rules(seat_cat, flag, c_row):
-    seat_cat = str(seat_cat).upper().strip()
-    flag = str(flag).upper().strip()
+# ----------------------------------------------------------
+# Special category rules
+# ----------------------------------------------------------
+def special_ok(seat_cat, flag, cand):
+    seat_cat = seat_cat.upper()
+    flag = flag.upper()
 
-    cand_nri  = str(c_row.get("NRI", "")).upper().strip()
-    cand_min  = str(c_row.get("Minority", "")).upper().strip()
-    cand_sp3  = str(c_row.get("Special3", "")).upper().strip()
-    cand_cat  = str(c_row.get("Category", "")).upper().strip()
+    nri = cand["NRI"]
+    mino = cand["Minority"]
+    sp3 = cand["Special3"]
+    ccat = cand["Category"]
 
-    # -------------------------------------------------------
-    # NRI SEATS (NR, NC, NM)
-    # -------------------------------------------------------
-    if seat_cat == "NR":
-        return (flag == "R" and cand_nri == "NR")
+    # NR, NC, NM
+    if seat_cat == "NR":   return (flag == "R" and nri == "NR")
+    if seat_cat == "NC":   return (flag == "R" and nri == "NRNC")
+    if seat_cat == "NM":   return (flag == "R" and nri == "NM")
 
-    if seat_cat == "NC":
-        return (flag == "R" and cand_nri == "NRNC")
+    # AC, MM
+    if seat_cat == "AC":   return (flag == "Y" and mino == "AC")
+    if seat_cat == "MM":   return (flag == "Y" and mino == "MM")
 
-    if seat_cat == "NM":
-        return (flag == "R" and cand_nri == "NM")
+    # PD
+    if seat_cat == "PD":   return (sp3 == "PD")
 
-    # -------------------------------------------------------
-    # MINORITY SEATS (AC, MM)
-    # -------------------------------------------------------
-    if seat_cat == "AC":
-        return (flag == "Y" and cand_min == "AC")
-
-    if seat_cat == "MM":
-        return (flag == "Y" and cand_min == "MM")
-
-    # -------------------------------------------------------
-    # PD seats
-    # -------------------------------------------------------
-    if seat_cat == "PD":
-        return (cand_sp3 == "PD")
-
-    # -------------------------------------------------------
-    # CD seats → Only SC + PD
-    # -------------------------------------------------------
-    if seat_cat == "CD":
-        return (cand_cat == "SC" and cand_sp3 == "PD")
+    # CD (only SC + PD)
+    if seat_cat == "CD":   return (ccat == "SC" and sp3 == "PD")
 
     return True
 
 
-# ==========================================================
-# PG MEDICAL ALLOTMENT ENGINE
-# ==========================================================
+# ----------------------------------------------------------
+# Category eligibility check
+# ----------------------------------------------------------
+def eligible(seat_cat, cand_cat):
+    if seat_cat == "SM":
+        return True
+    if cand_cat in ("", "NULL", "NA"):
+        return False
+    return seat_cat == cand_cat
+
+
+# ----------------------------------------------------------
+# Main PG Allotment (Optimized)
+# ----------------------------------------------------------
 def pg_med_allotment():
 
-    st.title("🩺 PG Medical Allotment – FINAL ENGINE (Correct 11-digit Format)")
+    st.title("⚡ PG Medical Allotment — FAST ENGINE")
 
-    cand_file = st.file_uploader("1️⃣ Upload Candidates File", type=["csv","xlsx"])
-    seat_file = st.file_uploader("2️⃣ Upload Seat Matrix File", type=["csv","xlsx"])
-    opt_file  = st.file_uploader("3️⃣ Upload Option Entry File", type=["csv","xlsx"])
+    cand_file = st.file_uploader("Upload Candidates", ["csv","xlsx"])
+    seat_file = st.file_uploader("Upload Seat Matrix", ["csv","xlsx"])
+    opt_file  = st.file_uploader("Upload Option Entry", ["csv","xlsx"])
 
-    if not (cand_file and seat_file and opt_file):
+    if not(cand_file and seat_file and opt_file):
         return
 
+    # Load data
     cand = read_any(cand_file)
     seats = read_any(seat_file)
     opts = read_any(opt_file)
 
-    st.success("✔ Files Loaded Successfully")
+    st.success("Files Loaded.")
 
-    # ======================================================
-    # CLEAN CANDIDATES
-    # ======================================================
-    for col in ["RollNo","PRank","HQ_Rank","MQ_Rank","IQ_Rank","STRank"]:
-        if col not in cand.columns:
+    # ------------------------------------------------------
+    # Prepare Candidates
+    # ------------------------------------------------------
+    for col in ["RollNo","PRank","STRank","HQ_Rank","MQ_Rank","IQ_Rank"]:
+        if col not in cand:
             cand[col] = 0
         cand[col] = pd.to_numeric(cand[col], errors="coerce").fillna(0).astype(int)
 
-    cand["Category"] = cand["Category"].astype(str).str.upper().fillna("NA")
-    cand["NRI"] = cand.get("NRI", "").astype(str).str.upper()
-    cand["Minority"] = cand.get("Minority", "").astype(str).str.upper()
-    cand["Special3"] = cand.get("Special3", "").astype(str).str.upper()
-    cand["Status"] = cand.get("Status", "").astype(str).str.upper()
+    cand["Category"]  = cand["Category"].astype(str).str.upper()
+    cand["NRI"]       = cand.get("NRI","").astype(str).str.upper()
+    cand["Minority"]  = cand.get("Minority","").astype(str).str.upper()
+    cand["Special3"]  = cand.get("Special3","").astype(str).str.upper()
+    cand["Status"]    = cand.get("Status","").astype(str).str.upper()
 
-    # Remove PRank=0 and 'S' status
-    cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")]
+    # Remove invalid candidates
+    cand = cand[(cand["PRank"]>0) & (cand["Status"]!="S")]
     cand = cand.sort_values("PRank")
 
-    # ======================================================
-    # CLEAN OPTIONS
-    # ======================================================
-    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
-    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
-
+    # ------------------------------------------------------
+    # Prepare Option Entries (group by RollNo for speed)
+    # ------------------------------------------------------
     opts = opts[
-        (opts["OPNO"] > 0) &
-        (opts["ValidOption"].astype(str).str.upper() == "Y") &
-        (opts["Delflg"].astype(str).str.upper() != "Y")
+        (opts["ValidOption"].astype(str).str.upper()=="Y") &
+        (opts["Delflg"].astype(str).str.upper()!="Y")
     ]
 
-    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
-    opts = opts.sort_values(["RollNo","OPNO"])
+    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
+    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
+    opts["Optn"]   = opts["Optn"].astype(str).str.upper().str.strip()
 
-    # ======================================================
-    # CLEAN SEATS
-    # ======================================================
-    for col in ["grp","typ","course","college","category"]:
-        seats[col] = seats[col].astype(str).str.upper().str.strip()
+    # Group options by RollNo → instant lookup
+    opt_map = {}
+    for _, r in opts.iterrows():
+        roll = r["RollNo"]
+        if roll not in opt_map:
+            opt_map[roll] = []
+        opt_map[roll].append((r["OPNO"], decode_opt(r["Optn"])))
+
+    # ------------------------------------------------------
+    # Build Seat Map (dictionary only)
+    # ------------------------------------------------------
+    seats["grp"] = seats["grp"].astype(str).str.upper()
+    seats["typ"] = seats["typ"].astype(str).str.upper()
+    seats["course"] = seats["course"].astype(str).str.upper()
+    seats["college"] = seats["college"].astype(str).str.upper()
+    seats["category"] = seats["category"].astype(str).str.upper()
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
-    seat_map = {}
-    for _, r in seats.iterrows():
-        key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_map[key] = seat_map.get(key, 0) + r["SEAT"]
+    seat_map = {}     # key → seats left
+    seat_grp = {}     # (GM, G, CC, CO) → list of categories
 
-    # ======================================================
-    # ALLOTMENT LOOP
-    # ======================================================
-    allotments = []
+    for _, s in seats.iterrows():
+        key = (s["grp"], s["typ"], s["college"], s["course"], s["category"])
+        seat_map[key] = s["SEAT"]
+
+        gkey = (s["grp"], s["typ"], s["college"], s["course"])
+        seat_grp.setdefault(gkey, []).append(s["category"])
+
+
+    # ------------------------------------------------------
+    # FASTEST POSSIBLE LOOP — pure Python, no pandas
+    # ------------------------------------------------------
+    result = []
 
     for _, c in cand.iterrows():
 
         roll = c["RollNo"]
-        cat = c["Category"]
+        cand_cat = c["Category"]
 
-        myopts = opts[opts["RollNo"] == roll]
-        if myopts.empty:
+        if roll not in opt_map:
             continue
 
-        for _, op in myopts.iterrows():
+        candidate_opts = opt_map[roll]
 
-            dec = decode_opt(op["Optn"])
-            if not dec:
+        for opno, d in candidate_opts:
+            if not d:
                 continue
 
-            prog    = dec["prog"]
-            typ     = dec["typ"]
-            course  = dec["course"]
-            college = dec["college"]
-            flag    = dec["flag"]
+            prog = d["prog"]
+            typ = d["typ"]
+            course = d["course"]
+            college = d["college"]
+            flag = d["flag"]
 
-            sr = seats[
-                (seats["grp"] == prog + "M") &
-                (seats["typ"] == typ) &
-                (seats["course"] == course) &
-                (seats["college"] == college)
-            ]
-            if sr.empty:
+            gkey = (prog+"M", typ, college, course)
+            if gkey not in seat_grp:
                 continue
 
-            # Priority order
-            priority = []
-            if cat not in ("NA","NULL",""): priority.append(cat)
-            if c["HQ_Rank"] > 0: priority.append("HQ")
-            if c["MQ_Rank"] > 0: priority.append("MQ")
-            if c["IQ_Rank"] > 0: priority.append("IQ")
-            priority.append("SM")
+            # Priority list
+            pr = []
+            if cand_cat not in ("", "NA"): pr.append(cand_cat)
+            if c["HQ_Rank"] > 0: pr.append("HQ")
+            if c["MQ_Rank"] > 0: pr.append("MQ")
+            if c["IQ_Rank"] > 0: pr.append("IQ")
+            pr.append("SM")
 
-            chosen = None
+            assigned = False
 
-            for pcat in priority:
-
-                row = sr[sr["category"] == pcat]
-                if row.empty:
+            # Loop only available category rows for this course/college
+            for pcat in pr:
+                if pcat not in seat_grp[gkey]:
                     continue
 
-                key = (prog + "M", typ, college, course, pcat)
+                key = (prog+"M", typ, college, course, pcat)
 
-                if seat_map.get(key, 0) <= 0:
+                if seat_map.get(key,0) <= 0:
                     continue
 
-                # Special rules apply here
-                if not passes_special_rules(pcat, flag, c):
+                # special rules
+                if not special_ok(pcat, flag, c):
                     continue
 
-                if not eligible_category(pcat, cat):
+                # category match
+                if not eligible(pcat, cand_cat):
                     continue
 
-                chosen = (pcat, key)
+                # allot seat
+                seat_map[key] -= 1
+
+                allot_code = make_allot_code(prog, typ, course, college, pcat)
+
+                result.append({
+                    "RollNo": roll,
+                    "OPNO": opno,
+                    "AllotCode": allot_code,
+                    "College": college,
+                    "Course": course,
+                    "SeatCategory": pcat
+                })
+
+                assigned = True
                 break
 
-            if not chosen:
-                continue
+            if assigned:
+                break
 
-            seat_cat, key = chosen
-            seat_map[key] -= 1
+    # ------------------------------------------------------
+    # Output
+    # ------------------------------------------------------
+    df = pd.DataFrame(result)
 
-            allot_code = make_allot_code(prog, typ, course, college, seat_cat)
-
-            allotments.append({
-                "RollNo": roll,
-                "OPNO": op["OPNO"],
-                "AllotCode": allot_code,
-                "College": college,
-                "Course": course,
-                "SeatCategory": seat_cat
-            })
-
-            break  # stop after allotment
-
-    # ======================================================
-    # OUTPUT
-    # ======================================================
-    result = pd.DataFrame(allotments)
-
-    st.subheader("🟩 Allotment Completed Successfully")
-    st.write(f"Total Allotted = **{len(result)}**")
-
-    st.dataframe(result)
+    st.success(f"Allotment Completed — {len(df)} allotted")
+    st.dataframe(df)
 
     buf = BytesIO()
-    result.to_csv(buf, index=False)
+    df.to_csv(buf, index=False)
     buf.seek(0)
 
-    st.download_button(
-        "⬇ Download PG Allotment",
-        buf,
-        "PG_Allotment.csv",
-        "text/csv",
-    )
+    st.download_button("Download PG Allotment", buf, "PG_Allotment.csv")
