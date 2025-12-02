@@ -193,7 +193,7 @@ def main_app():
     elif selected == "DNM":
         dnm_allotment()
         # In your menu routing:
-    elif selected == "PGA":   # or whatever label you choose
+    elif selected == "PGM":   # or whatever label you choose
         pg_med_allotment()
     else:
         future_program()
