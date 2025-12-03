@@ -24,19 +24,19 @@ def eligible_category(seat_cat, cand_cat):
     if cand_cat in ("", "NULL", "NA"):
         cand_cat = "NA"
 
-    # Quota seats
+    # Quota seats – allowed for everyone (subject to having rank)
     if seat_cat in ("HQ", "MQ", "IQ"):
         return True
 
-    # Open merit
+    # Open merit – allowed for everyone
     if seat_cat == "SM":
         return True
 
-    # Special categories – detailed rules in passes_special_rules
+    # Special seats – final check in passes_special_rules
     if seat_cat in ("PD", "CD", "AC", "MM", "NR", "NC", "NM"):
         return True
 
-    # Community category (BH, EZ, MU, etc.)
+    # Community seat (BH/EZ/MU/SC/ST/OBC ...)
     if cand_cat == "NA":
         return False
 
@@ -44,43 +44,41 @@ def eligible_category(seat_cat, cand_cat):
 
 
 # ==========================================================
-# Special rules for NR / NC / NM / AC / MM / PD / CD
+# Special rules – NRI / Minority / PD / CD / etc.
 # ==========================================================
 def passes_special_rules(seat_cat, flag, c):
     seat_cat = str(seat_cat).upper().strip()
     flag = str(flag).upper().strip()
 
-    cand_nri = str(c.NRI).upper().strip()
-    cand_min = str(c.Minority).upper().strip()
-    cand_sp3 = str(c.Special3).upper().strip()
-    cand_cat = str(c.Category).upper().strip()
+    cand_nri = str(getattr(c, "NRI", "")).upper().strip()
+    cand_min = str(getattr(c, "Minority", "")).upper().strip()
+    cand_sp3 = str(getattr(c, "Special3", "")).upper().strip()
+    cand_cat = str(getattr(c, "Category", "")).upper().strip()
 
     # ---- NR seat ----
-    # Seat = NR, flag must be R, candidate NRI = NR or NRI-NR
+    # Seat = NR, flag = R, NRI in {NR, NRI-NR}
     if seat_cat == "NR":
         if flag != "R" or cand_nri not in {"NR", "NRI-NR"}:
             return False
 
     # ---- NC seat ----
-    # Seat = NC, flag must be R, candidate NRI = NRNC
+    # Seat = NC, flag = R, NRI = NRNC
     if seat_cat == "NC":
         if flag != "R" or cand_nri not in {"NRNC"}:
             return False
 
     # ---- NM seat ----
-    # Seat = NM, flag must be R, candidate NRI = NRNM
+    # Seat = NM, flag = R, NRI = NRNM
     if seat_cat == "NM":
         if flag != "R" or cand_nri not in {"NRNM"}:
             return False
 
     # ---- AC minority ----
-    # Seat = AC, flag = Y, Minority = AC
     if seat_cat == "AC":
         if flag != "Y" or cand_min != "AC":
             return False
 
     # ---- MM minority ----
-    # Seat = MM, flag = Y, Minority = MM
     if seat_cat == "MM":
         if flag != "Y" or cand_min != "MM":
             return False
@@ -95,7 +93,7 @@ def passes_special_rules(seat_cat, flag, c):
         if not (cand_cat == "SC" and cand_sp3 == "PD"):
             return False
 
-    # For all other categories, or when no special rule applies:
+    # No extra restriction
     return True
 
 
@@ -108,15 +106,15 @@ def decode_opt(opt):
         return None
     return {
         "prog": opt[0],        # M
-        "typ": opt[1],         # G / S
+        "typ": opt[1],         # G/S
         "course": opt[2:4],    # 2 letters
         "college": opt[4:7],   # 3 letters
-        "flag": opt[7],        # G / M / Y / R / N ...
+        "flag": opt[7],        # G/M/Y/R/N...
     }
 
 
 # ==========================================================
-# Build Allotment Code (MG + CC + COL + CATCAT)
+# Build Allotment Code: MG + CC + COL + CATCAT
 # ==========================================================
 def make_allot_code(prog, typ, course, college, category):
     c2 = category[:2].upper()
@@ -127,8 +125,7 @@ def make_allot_code(prog, typ, course, college, category):
 # MAIN APP
 # ==========================================================
 def pg_med_allotment():
-
-    st.title("🩺 PG Medical Allotment – Manual Logic Style (G open for all)")
+    st.title("🩺 PG Medical Allotment – HQ/MQ/IQ Priority + Correct Category Rules")
 
     cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"])
@@ -140,8 +137,6 @@ def pg_med_allotment():
     cand = read_any(cand_file)
     seats = read_any(seat_file)
     opts  = read_any(opt_file)
-
-    st.success("Files loaded successfully!")
 
     # ----------------------------------------------------------
     # CLEAN CANDIDATES
@@ -162,8 +157,29 @@ def pg_med_allotment():
     # remove resigned / ineligible
     cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")].copy()
 
-    # *** MANUAL-LIKE ORDER: strictly by PRank ***
-    cand = cand.sort_values("PRank").reset_index(drop=True)
+    # ---- build global processing order: HQ → MQ → IQ → PRank ----
+    cand_rows = list(cand.itertuples(index=False))
+    order = []
+    used = set()
+
+    def add_phase(rows, rank_attr):
+        nonlocal order, used
+        phase = [r for r in rows if getattr(r, rank_attr) > 0 and r.RollNo not in used]
+        phase.sort(key=lambda r: getattr(r, rank_attr))
+        for r in phase:
+            order.append(r)
+            used.add(r.RollNo)
+
+    # Phase 1: HQ
+    add_phase(cand_rows, "HQ_Rank")
+    # Phase 2: MQ
+    add_phase(cand_rows, "MQ_Rank")
+    # Phase 3: IQ
+    add_phase(cand_rows, "IQ_Rank")
+    # Phase 4: remaining by PRank
+    remaining = [r for r in cand_rows if r.RollNo not in used]
+    remaining.sort(key=lambda r: r.PRank)
+    order.extend(remaining)
 
     # ----------------------------------------------------------
     # CLEAN OPTIONS
@@ -198,11 +214,10 @@ def pg_med_allotment():
     for r in seats.itertuples(index=False):
         key = (r.grp, r.typ, r.course, r.college, r.category)
         seat_map[key] = seat_map.get(key, 0) + int(r.SEAT)
-
         gkey = (r.grp, r.typ, r.course, r.college)
         seat_groups[gkey].add(r.category)
 
-    # For detailed report
+    # seat summary for report
     seat_grouped = (
         seats.groupby(["college", "course", "typ", "category"], as_index=False)["SEAT"]
         .sum()
@@ -220,14 +235,18 @@ def pg_med_allotment():
     # ----------------------------------------------------------
     allotments = []
 
-    for c in cand.itertuples(index=False):
+    def add_priority(priority_list, label):
+        """Append label if not already present."""
+        if label not in priority_list:
+            priority_list.append(label)
+
+    for c in order:  # global candidate order
 
         myopts = opts_by_roll.get(c.RollNo)
         if not myopts:
             continue
 
         for op in myopts:
-
             dec = decode_opt(op.Optn)
             if not dec:
                 continue
@@ -236,81 +255,70 @@ def pg_med_allotment():
             typ     = dec["typ"]
             course  = dec["course"]
             college = dec["college"]
-            flag    = dec["flag"].upper()   # G/M/Y/R...
+            flag    = dec["flag"].upper()
 
             base = (grp, typ, course, college)
             if base not in seat_groups:
                 continue
 
             available = seat_groups[base]
-
-            # --------------------------------------------------
-            # PRIORITY ORDER (manual-style, with M-flag bonus)
-            # --------------------------------------------------
             priority = []
 
-            # For flag = M → prefer HQ→MQ→IQ first for that option
+            # ---------- PRIORITY INSIDE ONE OPTION ----------
+
+            # For flag M: HQ → MQ → IQ first
             if flag == "M":
                 if "HQ" in available and c.HQ_Rank > 0:
-                    priority.append("HQ")
+                    add_priority(priority, "HQ")
                 if "MQ" in available and c.MQ_Rank > 0:
-                    priority.append("MQ")
+                    add_priority(priority, "MQ")
                 if "IQ" in available and c.IQ_Rank > 0:
-                    priority.append("IQ")
+                    add_priority(priority, "IQ")
 
-            # Community category (for all flags, including G)
+            # Community seat (only if candidate has that category)
             if c.Category not in ("NA", "") and c.Category in available:
-                if c.Category not in priority:
-                    priority.append(c.Category)
+                add_priority(priority, c.Category)
 
-            # HQ / MQ / IQ (normal behaviour for non-M as well)
-            if "HQ" in available and c.HQ_Rank > 0 and "HQ" not in priority:
-                priority.append("HQ")
-            if "MQ" in available and c.MQ_Rank > 0 and "MQ" not in priority:
-                priority.append("MQ")
-            if "IQ" in available and c.IQ_Rank > 0 and "IQ" not in priority:
-                priority.append("IQ")
+            # HQ / MQ / IQ (for all flags, including G)
+            if "HQ" in available and c.HQ_Rank > 0:
+                add_priority(priority, "HQ")
+            if "MQ" in available and c.MQ_Rank > 0:
+                add_priority(priority, "MQ")
+            if "IQ" in available and c.IQ_Rank > 0:
+                add_priority(priority, "IQ")
 
             # Special categories
             for sc in ["PD", "CD", "AC", "MM", "NR", "NC", "NM"]:
                 if sc not in available:
                     continue
-                if sc in priority:
-                    continue
                 if not passes_special_rules(sc, flag, c):
                     continue
-                priority.append(sc)
+                add_priority(priority, sc)
 
-            # SM last (G is “open for all”, so everyone can try SM)
-            if "SM" in available and "SM" not in priority:
-                priority.append("SM")
+            # SM last – everyone can try SM
+            if "SM" in available:
+                add_priority(priority, "SM")
 
-            # --------------------------------------------------
-            # TRY TO FIND A SEAT
-            # --------------------------------------------------
-            chosen = None
+            # ---------- TRY TO FIND SEAT ----------
+            chosen_cat = None
             chosen_key = None
 
             for sc in priority:
                 skey = (grp, typ, course, college, sc)
 
-                # no seat left
                 if seat_map.get(skey, 0) <= 0:
                     continue
-
                 if not eligible_category(sc, c.Category):
                     continue
-
                 if not passes_special_rules(sc, flag, c):
                     continue
 
-                chosen = sc
+                chosen_cat = sc
                 chosen_key = skey
                 break
 
-            if not chosen:
-                # try next option
-                continue
+            if not chosen_cat:
+                continue  # try next option
 
             # Deduct seat
             seat_map[chosen_key] -= 1
@@ -321,11 +329,11 @@ def pg_med_allotment():
                 "OPNO": op.OPNO,
                 "College": college,
                 "Course": course,
-                "SeatCategory": chosen,
-                "AllotCode": make_allot_code(dec["prog"], typ, course, college, chosen),
+                "SeatCategory": chosen_cat,
+                "AllotCode": make_allot_code(dec["prog"], typ, course, college, chosen_cat),
             })
 
-            break  # stop at first successful option
+            break  # stop at first allotted option
 
     # ----------------------------------------------------------
     # OUTPUT
@@ -336,7 +344,7 @@ def pg_med_allotment():
     st.write("Total Allotted:", len(result))
     st.dataframe(result)
 
-    # Detailed seat report
+    # Detailed report
     if not result.empty:
         admitted = (
             result.groupby(["College", "Course", "SeatCategory"], as_index=False)
@@ -377,8 +385,8 @@ def pg_med_allotment():
                 "RemainingSeat": rem,
             })
 
-    st.subheader("🪑 Remaining Seats After Allotment")
     rem_df = pd.DataFrame(rem_rows)
+    st.subheader("🪑 Remaining Seats After Allotment")
     st.dataframe(rem_df)
 
     # Downloads
@@ -393,6 +401,5 @@ def pg_med_allotment():
     st.download_button("⬇ Download Detailed Seat Report CSV", buf2, "Seat_Detail.csv")
 
 
-# If running with `streamlit run`:
 if __name__ == "__main__":
     pg_med_allotment()
