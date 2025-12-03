@@ -32,11 +32,11 @@ def eligible_category(seat_cat, cand_cat):
     if seat_cat == "SM":
         return True
 
-    # Special categories
+    # Special categories – detailed rules in passes_special_rules
     if seat_cat in ("PD", "CD", "AC", "MM", "NR", "NC", "NM"):
         return True
 
-    # Community category
+    # Community category (BH, EZ, MU, etc.)
     if cand_cat == "NA":
         return False
 
@@ -44,7 +44,7 @@ def eligible_category(seat_cat, cand_cat):
 
 
 # ==========================================================
-# Special rules
+# Special rules for NR / NC / NM / AC / MM / PD / CD
 # ==========================================================
 def passes_special_rules(seat_cat, flag, c):
     seat_cat = str(seat_cat).upper().strip()
@@ -56,26 +56,31 @@ def passes_special_rules(seat_cat, flag, c):
     cand_cat = str(c.Category).upper().strip()
 
     # ---- NR seat ----
+    # Seat = NR, flag must be R, candidate NRI = NR or NRI-NR
     if seat_cat == "NR":
         if flag != "R" or cand_nri not in {"NR", "NRI-NR"}:
             return False
 
     # ---- NC seat ----
+    # Seat = NC, flag must be R, candidate NRI = NRNC
     if seat_cat == "NC":
         if flag != "R" or cand_nri not in {"NRNC"}:
             return False
 
     # ---- NM seat ----
+    # Seat = NM, flag must be R, candidate NRI = NRNM
     if seat_cat == "NM":
         if flag != "R" or cand_nri not in {"NRNM"}:
             return False
 
-    # ---- AC ----
+    # ---- AC minority ----
+    # Seat = AC, flag = Y, Minority = AC
     if seat_cat == "AC":
         if flag != "Y" or cand_min != "AC":
             return False
 
-    # ---- MM ----
+    # ---- MM minority ----
+    # Seat = MM, flag = Y, Minority = MM
     if seat_cat == "MM":
         if flag != "Y" or cand_min != "MM":
             return False
@@ -90,27 +95,28 @@ def passes_special_rules(seat_cat, flag, c):
         if not (cand_cat == "SC" and cand_sp3 == "PD"):
             return False
 
+    # For all other categories, or when no special rule applies:
     return True
 
 
 # ==========================================================
-# Decode option
+# Decode 8-char option
 # ==========================================================
 def decode_opt(opt):
     opt = str(opt).upper().strip()
     if len(opt) != 8:
         return None
     return {
-        "prog": opt[0],
-        "typ": opt[1],
-        "course": opt[2:4],
-        "college": opt[4:7],
-        "flag": opt[7],
+        "prog": opt[0],        # M
+        "typ": opt[1],         # G / S
+        "course": opt[2:4],    # 2 letters
+        "college": opt[4:7],   # 3 letters
+        "flag": opt[7],        # G / M / Y / R / N ...
     }
 
 
 # ==========================================================
-# Build Allotment Code
+# Build Allotment Code (MG + CC + COL + CATCAT)
 # ==========================================================
 def make_allot_code(prog, typ, course, college, category):
     c2 = category[:2].upper()
@@ -122,24 +128,26 @@ def make_allot_code(prog, typ, course, college, category):
 # ==========================================================
 def pg_med_allotment():
 
-    st.title("🩺 PG Medical Allotment – HQ/MQ/IQ Priority + M-Flag Logic")
+    st.title("🩺 PG Medical Allotment – Manual Logic Style (G open for all)")
 
     cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"])
-    opt_file = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"])
+    opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"])
 
     if not (cand_file and seat_file and opt_file):
         return
 
     cand = read_any(cand_file)
     seats = read_any(seat_file)
-    opts = read_any(opt_file)
+    opts  = read_any(opt_file)
+
+    st.success("Files loaded successfully!")
 
     # ----------------------------------------------------------
     # CLEAN CANDIDATES
     # ----------------------------------------------------------
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
-    cand["PRank"] = pd.to_numeric(cand["PRank"], errors="coerce").fillna(0).astype(int)
+    cand["PRank"]  = pd.to_numeric(cand["PRank"], errors="coerce").fillna(0).astype(int)
 
     for col in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if col not in cand.columns:
@@ -154,43 +162,14 @@ def pg_med_allotment():
     # remove resigned / ineligible
     cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")].copy()
 
-    # ----------------------------------------------------------
-    # BUILD GLOBAL PROCESSING ORDER (Option B)
-    # Phase 1: HQ_Rank order
-    # Phase 2: MQ_Rank order (remaining)
-    # Phase 3: IQ_Rank order (remaining)
-    # Phase 4: PRank order (remaining)
-    # ----------------------------------------------------------
-    cand_rows = list(cand.itertuples(index=False))
-    order = []
-    used_rolls = set()
-
-    # helper to add a phase
-    def add_phase(rows, rank_attr):
-        nonlocal order, used_rolls
-        phase = [r for r in rows if getattr(r, rank_attr) > 0 and r.RollNo not in used_rolls]
-        phase = sorted(phase, key=lambda r: getattr(r, rank_attr))
-        for r in phase:
-            order.append(r)
-            used_rolls.add(r.RollNo)
-
-    # HQ phase
-    add_phase(cand_rows, "HQ_Rank")
-    # MQ phase
-    add_phase(cand_rows, "MQ_Rank")
-    # IQ phase
-    add_phase(cand_rows, "IQ_Rank")
-
-    # remaining by PRank
-    remaining = [r for r in cand_rows if r.RollNo not in used_rolls]
-    remaining = sorted(remaining, key=lambda r: r.PRank)
-    order.extend(remaining)
+    # *** MANUAL-LIKE ORDER: strictly by PRank ***
+    cand = cand.sort_values("PRank").reset_index(drop=True)
 
     # ----------------------------------------------------------
     # CLEAN OPTIONS
     # ----------------------------------------------------------
     opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
-    opts["OPNO"] = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
+    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
 
     opts = opts[
         (opts["OPNO"] > 0) &
@@ -223,7 +202,7 @@ def pg_med_allotment():
         gkey = (r.grp, r.typ, r.course, r.college)
         seat_groups[gkey].add(r.category)
 
-    # seat summary for report
+    # For detailed report
     seat_grouped = (
         seats.groupby(["college", "course", "typ", "category"], as_index=False)["SEAT"]
         .sum()
@@ -237,11 +216,11 @@ def pg_med_allotment():
     )
 
     # ----------------------------------------------------------
-    # RUN ALLOTMENT (USING NEW GLOBAL ORDER)
+    # RUN ALLOTMENT
     # ----------------------------------------------------------
     allotments = []
 
-    for c in order:  # c is a namedtuple row from cand_rows/order
+    for c in cand.itertuples(index=False):
 
         myopts = opts_by_roll.get(c.RollNo)
         if not myopts:
@@ -253,11 +232,11 @@ def pg_med_allotment():
             if not dec:
                 continue
 
-            grp = "PG" + dec["prog"]
-            typ = dec["typ"]
-            course = dec["course"]
+            grp     = "PG" + dec["prog"]
+            typ     = dec["typ"]
+            course  = dec["course"]
             college = dec["college"]
-            flag = dec["flag"]
+            flag    = dec["flag"].upper()   # G/M/Y/R...
 
             base = (grp, typ, course, college)
             if base not in seat_groups:
@@ -266,33 +245,44 @@ def pg_med_allotment():
             available = seat_groups[base]
 
             # --------------------------------------------------
-            # PRIORITY LOGIC – with M-flag rule
+            # PRIORITY ORDER (manual-style, with M-flag bonus)
             # --------------------------------------------------
             priority = []
 
-            # If NOT M flag → community first
-            if flag != "M":
-                if c.Category not in ("NA", "") and c.Category in available:
+            # For flag = M → prefer HQ→MQ→IQ first for that option
+            if flag == "M":
+                if "HQ" in available and c.HQ_Rank > 0:
+                    priority.append("HQ")
+                if "MQ" in available and c.MQ_Rank > 0:
+                    priority.append("MQ")
+                if "IQ" in available and c.IQ_Rank > 0:
+                    priority.append("IQ")
+
+            # Community category (for all flags, including G)
+            if c.Category not in ("NA", "") and c.Category in available:
+                if c.Category not in priority:
                     priority.append(c.Category)
 
-            # HQ → MQ → IQ always considered next (for any flag)
-            if "HQ" in available and c.HQ_Rank > 0:
+            # HQ / MQ / IQ (normal behaviour for non-M as well)
+            if "HQ" in available and c.HQ_Rank > 0 and "HQ" not in priority:
                 priority.append("HQ")
-            if "MQ" in available and c.MQ_Rank > 0:
+            if "MQ" in available and c.MQ_Rank > 0 and "MQ" not in priority:
                 priority.append("MQ")
-            if "IQ" in available and c.IQ_Rank > 0:
+            if "IQ" in available and c.IQ_Rank > 0 and "IQ" not in priority:
                 priority.append("IQ")
 
-            # Special categories after quotas
+            # Special categories
             for sc in ["PD", "CD", "AC", "MM", "NR", "NC", "NM"]:
                 if sc not in available:
+                    continue
+                if sc in priority:
                     continue
                 if not passes_special_rules(sc, flag, c):
                     continue
                 priority.append(sc)
 
-            # SM last
-            if "SM" in available:
+            # SM last (G is “open for all”, so everyone can try SM)
+            if "SM" in available and "SM" not in priority:
                 priority.append("SM")
 
             # --------------------------------------------------
@@ -304,10 +294,13 @@ def pg_med_allotment():
             for sc in priority:
                 skey = (grp, typ, course, college, sc)
 
+                # no seat left
                 if seat_map.get(skey, 0) <= 0:
                     continue
+
                 if not eligible_category(sc, c.Category):
                     continue
+
                 if not passes_special_rules(sc, flag, c):
                     continue
 
@@ -316,6 +309,7 @@ def pg_med_allotment():
                 break
 
             if not chosen:
+                # try next option
                 continue
 
             # Deduct seat
@@ -334,7 +328,7 @@ def pg_med_allotment():
             break  # stop at first successful option
 
     # ----------------------------------------------------------
-    # OUTPUT SECTION
+    # OUTPUT
     # ----------------------------------------------------------
     result = pd.DataFrame(allotments)
 
@@ -342,7 +336,7 @@ def pg_med_allotment():
     st.write("Total Allotted:", len(result))
     st.dataframe(result)
 
-    # Detailed report
+    # Detailed seat report
     if not result.empty:
         admitted = (
             result.groupby(["College", "Course", "SeatCategory"], as_index=False)
@@ -388,12 +382,17 @@ def pg_med_allotment():
     st.dataframe(rem_df)
 
     # Downloads
-    b1 = BytesIO()
-    result.to_csv(b1, index=False)
-    b1.seek(0)
-    st.download_button("⬇ Download Allotment CSV", b1, "Allotment.csv")
+    buf1 = BytesIO()
+    result.to_csv(buf1, index=False)
+    buf1.seek(0)
+    st.download_button("⬇ Download Allotment CSV", buf1, "Allotment.csv")
 
-    b2 = BytesIO()
-    detail.to_csv(b2, index=False)
-    b2.seek(0)
-    st.download_button("⬇ Download Detailed Seat Report CSV", b2, "Seat_Detail.csv")
+    buf2 = BytesIO()
+    detail.to_csv(buf2, index=False)
+    buf2.seek(0)
+    st.download_button("⬇ Download Detailed Seat Report CSV", buf2, "Seat_Detail.csv")
+
+
+# If running with `streamlit run`:
+if __name__ == "__main__":
+    pg_med_allotment()
