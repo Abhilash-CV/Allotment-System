@@ -32,11 +32,11 @@ def eligible_category(seat_cat, cand_cat):
     if seat_cat == "SM":
         return True
 
-    # Special seats – final check in passes_special_rules
+    # Special seats – detailed checks in passes_special_rules
     if seat_cat in ("PD", "CD", "AC", "MM", "NR", "NC", "NM"):
         return True
 
-    # Community seat (BH/EZ/MU/SC/ST/OBC ...)
+    # Community seats (BH/EZ/MU/SC/ST/OBC/...)
     if cand_cat == "NA":
         return False
 
@@ -125,11 +125,18 @@ def make_allot_code(prog, typ, course, college, category):
 # MAIN APP
 # ==========================================================
 def pg_med_allotment():
-    st.title("🩺 PG Medical Allotment – HQ/MQ/IQ Priority + Correct Category Rules")
+    st.title("🩺 PG Medical Allotment – PRank Global, HQ/MQ/IQ Inside Option")
 
     cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"])
     opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"])
+
+    debug_enabled = st.checkbox("🔍 Enable debug for a specific candidate")
+    debug_roll = None
+    if debug_enabled:
+        debug_roll = st.number_input("Enter Roll Number for debug", min_value=0, step=1, value=0)
+        if debug_roll == 0:
+            debug_enabled = False
 
     if not (cand_file and seat_file and opt_file):
         return
@@ -157,29 +164,9 @@ def pg_med_allotment():
     # remove resigned / ineligible
     cand = cand[(cand["PRank"] > 0) & (cand["Status"] != "S")].copy()
 
-    # ---- build global processing order: HQ → MQ → IQ → PRank ----
+    # ---- GLOBAL ORDER = PRank ONLY ----
+    cand = cand.sort_values("PRank").reset_index(drop=True)
     cand_rows = list(cand.itertuples(index=False))
-    order = []
-    used = set()
-
-    def add_phase(rows, rank_attr):
-        nonlocal order, used
-        phase = [r for r in rows if getattr(r, rank_attr) > 0 and r.RollNo not in used]
-        phase.sort(key=lambda r: getattr(r, rank_attr))
-        for r in phase:
-            order.append(r)
-            used.add(r.RollNo)
-
-    # Phase 1: HQ
-    add_phase(cand_rows, "HQ_Rank")
-    # Phase 2: MQ
-    add_phase(cand_rows, "MQ_Rank")
-    # Phase 3: IQ
-    add_phase(cand_rows, "IQ_Rank")
-    # Phase 4: remaining by PRank
-    remaining = [r for r in cand_rows if r.RollNo not in used]
-    remaining.sort(key=lambda r: r.PRank)
-    order.extend(remaining)
 
     # ----------------------------------------------------------
     # CLEAN OPTIONS
@@ -231,24 +218,35 @@ def pg_med_allotment():
     )
 
     # ----------------------------------------------------------
-    # RUN ALLOTMENT
+    # ALLOTMENT LOGIC
     # ----------------------------------------------------------
     allotments = []
+    debug_logs = []
 
     def add_priority(priority_list, label):
-        """Append label if not already present."""
         if label not in priority_list:
             priority_list.append(label)
 
-    for c in order:  # global candidate order
+    for c in cand_rows:
+
+        is_debug = debug_enabled and (int(c.RollNo) == int(debug_roll))
+        if is_debug:
+            debug_logs.append(f"=== Candidate {c.RollNo} (PRank={c.PRank}, Cat={c.Category}, HQ={c.HQ_Rank}, MQ={c.MQ_Rank}, IQ={c.IQ_Rank}) ===")
 
         myopts = opts_by_roll.get(c.RollNo)
         if not myopts:
+            if is_debug:
+                debug_logs.append("No valid options for this candidate.")
             continue
 
+        allotted_here = False
+
         for op in myopts:
+
             dec = decode_opt(op.Optn)
             if not dec:
+                if is_debug:
+                    debug_logs.append(f"OPNO {op.OPNO}: Invalid option format {op.Optn}")
                 continue
 
             grp     = "PG" + dec["prog"]
@@ -259,14 +257,19 @@ def pg_med_allotment():
 
             base = (grp, typ, course, college)
             if base not in seat_groups:
+                if is_debug:
+                    debug_logs.append(f"OPNO {op.OPNO}: No seat group for {grp}-{typ}-{course}-{college}")
                 continue
 
             available = seat_groups[base]
             priority = []
 
+            if is_debug:
+                debug_logs.append(f"OPNO {op.OPNO}: Optn={op.Optn}, flag={flag}, available_cats={sorted(list(available))}")
+
             # ---------- PRIORITY INSIDE ONE OPTION ----------
 
-            # For flag M: HQ → MQ → IQ first
+            # If flag = M -> HQ → MQ → IQ first (within this option)
             if flag == "M":
                 if "HQ" in available and c.HQ_Rank > 0:
                     add_priority(priority, "HQ")
@@ -275,11 +278,11 @@ def pg_med_allotment():
                 if "IQ" in available and c.IQ_Rank > 0:
                     add_priority(priority, "IQ")
 
-            # Community seat (only if candidate has that category)
-            if c.Category not in ("NA", "") and c.Category in available:
+            # Community seat (only same category, and not NA)
+            if c.Category not in ("NA", "", "NULL") and c.Category in available:
                 add_priority(priority, c.Category)
 
-            # HQ / MQ / IQ (for all flags, including G)
+            # HQ/MQ/IQ AFTER community (for all flags)
             if "HQ" in available and c.HQ_Rank > 0:
                 add_priority(priority, "HQ")
             if "MQ" in available and c.MQ_Rank > 0:
@@ -295,9 +298,12 @@ def pg_med_allotment():
                     continue
                 add_priority(priority, sc)
 
-            # SM last – everyone can try SM
+            # SM last – open
             if "SM" in available:
                 add_priority(priority, "SM")
+
+            if is_debug:
+                debug_logs.append(f"OPNO {op.OPNO}: Priority order = {priority}")
 
             # ---------- TRY TO FIND SEAT ----------
             chosen_cat = None
@@ -305,20 +311,31 @@ def pg_med_allotment():
 
             for sc in priority:
                 skey = (grp, typ, course, college, sc)
+                rem = seat_map.get(skey, 0)
 
-                if seat_map.get(skey, 0) <= 0:
+                if rem <= 0:
+                    if is_debug:
+                        debug_logs.append(f"  Try {sc}: NO SEAT LEFT")
                     continue
                 if not eligible_category(sc, c.Category):
+                    if is_debug:
+                        debug_logs.append(f"  Try {sc}: FAILED eligible_category (cand_cat={c.Category})")
                     continue
                 if not passes_special_rules(sc, flag, c):
+                    if is_debug:
+                        debug_logs.append(f"  Try {sc}: FAILED passes_special_rules (flag={flag})")
                     continue
 
                 chosen_cat = sc
                 chosen_key = skey
+                if is_debug:
+                    debug_logs.append(f"  Try {sc}: SUCCESS -> seat allotted")
                 break
 
             if not chosen_cat:
-                continue  # try next option
+                if is_debug:
+                    debug_logs.append(f"OPNO {op.OPNO}: No category could be allotted from priority list.")
+                continue
 
             # Deduct seat
             seat_map[chosen_key] -= 1
@@ -333,7 +350,13 @@ def pg_med_allotment():
                 "AllotCode": make_allot_code(dec["prog"], typ, course, college, chosen_cat),
             })
 
-            break  # stop at first allotted option
+            allotted_here = True
+            if is_debug:
+                debug_logs.append(f"✅ Candidate {c.RollNo} allotted: {college}-{course}-{chosen_cat} via OPNO {op.OPNO}")
+            break  # stop at first successful option
+
+        if not allotted_here and is_debug:
+            debug_logs.append(f"❌ Candidate {c.RollNo} NOT allotted in any option.")
 
     # ----------------------------------------------------------
     # OUTPUT
@@ -399,6 +422,14 @@ def pg_med_allotment():
     detail.to_csv(buf2, index=False)
     buf2.seek(0)
     st.download_button("⬇ Download Detailed Seat Report CSV", buf2, "Seat_Detail.csv")
+
+    # Debug log output
+    if debug_enabled and int(debug_roll or 0) > 0:
+        st.subheader(f"🔍 Debug log for RollNo {int(debug_roll)}")
+        if debug_logs:
+            st.text("\n".join(str(line) for line in debug_logs))
+        else:
+            st.write("No debug information (candidate may not exist or no options).")
 
 
 if __name__ == "__main__":
