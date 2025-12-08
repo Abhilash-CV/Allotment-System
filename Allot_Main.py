@@ -170,6 +170,7 @@ def main_app():
         "PGA": "📘 PGA Allotment",
         "DNM": "🧮 DNM Allotment",
         "PGM": "📘 PGM Allotment",
+        "BLE": "📘 BLE Allotment",
         "Future": "🛠 Future Tools"
     }
 
