@@ -197,6 +197,8 @@ def main_app():
         # In your menu routing:
     elif selected == "PGM":   # or whatever label you choose
         pg_med_allotment()
+    elif menu_choice == "B.Pharm Lateral Entry":
+        bpharm_le_allotment()
     else:
         future_program()
 
