@@ -15,14 +15,17 @@ def read_any(f):
 
 
 # =========================================================
-# CATEGORY ELIGIBILITY (UPDATED)
+# CATEGORY ELIGIBILITY  (Case C + SM priority)
 # =========================================================
 def eligible_for_category(seat_cat: str, cand_cat: str) -> bool:
     """
-    Correct rule:
-    1) SM open to all
-    2) NA / NULL / NAN / blank → ONLY SM
-    3) SC/ST/EZ/MU/EW etc → category + SM
+    Case C:
+      • Seat category is fixed.
+      • SC seat → only SC candidate
+      • EZ seat → only EZ candidate
+      • SM seat → anybody
+      • NA/NULL/NAN candidate → only SM
+      • Other categories (SC, ST, EZ, MU, EW, …) → can take their own category + SM
     """
     seat_cat = str(seat_cat).upper().strip()
     cand_cat = str(cand_cat).upper().strip()
@@ -30,29 +33,31 @@ def eligible_for_category(seat_cat: str, cand_cat: str) -> bool:
     if cand_cat in ("", "NULL", "NA", "NAN"):
         cand_cat = "NA"
 
-    # SM is open to everyone
+    # SM seat: open to all, including NA
     if seat_cat == "SM":
         return True
 
-    # NA candidates—eligible ONLY for SM
+    # NA candidates → only SM, cannot occupy any reserved category seat
     if cand_cat == "NA":
         return False
 
-    # Others—eligible only for their category (besides SM)
+    # Other community candidates → only their own category (SC→SC, EZ→EZ, etc.)
     return seat_cat == cand_cat
 
 
 # =========================================================
-# OPTION DECODER
+# Decode Option Code
 # =========================================================
 def decode_opt(opt: str):
     """
-    BLE format:
-       0   : grp (B)
-       1   : type G/S
-       2-3 : course
-       4-6 : college
-       7.. : flags (ignored)
+    BLE option pattern (like your other programs):
+
+      index 0 : grp (e.g. 'B')
+      index 1 : typ ('G' / 'S')
+      2-3     : course (2 chars)
+      4-6     : college (3 chars)
+      7+      : flags (ignored for BLE)
+
     """
     opt = str(opt).upper().strip()
     if len(opt) < 7:
@@ -67,111 +72,71 @@ def decode_opt(opt: str):
 
 
 def make_allot_code(grp, typ, course, college, category):
-    """Final 11-character BLE allotment code."""
-    cat2 = category[:2].upper()
+    """
+    11-char final allot code:
+        grp(1) + typ(1) + course(2) + college(3) + category(2) twice
+    Example:
+        BGVLKKMSMSM
+    """
+    cat2 = str(category).upper().strip()[:2]
     return f"{grp}{typ}{course}{college}{cat2}{cat2}"
 
 
 # =========================================================
-#     B.Pharm Lateral Entry Allotment
+# Build Preferences + Stable Matching (Gale–Shapley)
 # =========================================================
-def bpharm_le_allotment():
+def build_preferences(cand_df, opts_df, seats_df):
+    """
+    Build:
+      prefs[roll]      = ordered list of seat_keys in preference order
+                         seat_key = (grp, typ, college, course, category)
+      seat_cap[seat]   = capacity (SEAT)
+      rank[roll]       = BRank (lower better)
+    """
 
-    st.title("💊 B.Pharm Lateral Entry – Allotment (Gale–Shapley Style)")
-
-    cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"], key="ble_cand")
-    seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"], key="ble_seat")
-    opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"], key="ble_opt")
-
-    if not (cand_file and seat_file and opt_file):
-        return
-
-    cand = read_any(cand_file)
-    seats = read_any(seat_file)
-    opts = read_any(opt_file)
-
-    st.success("✔ Files Loaded Successfully")
-
-    # =====================================================
-    # CLEAN SEAT MATRIX
-    # =====================================================
-    required = ["grp", "typ", "college", "course", "category", "SEAT"]
-    for col in required:
-        if col not in seats.columns:
-            st.error(f"Missing column in Seat Matrix: {col}")
-            st.stop()
-
+    # ---------- Clean seats ----------
     for col in ["grp", "typ", "college", "course", "category"]:
-        seats[col] = seats[col].astype(str).str.upper().str.strip()
+        seats_df[col] = seats_df[col].astype(str).str.upper().str.strip()
+    seats_df["SEAT"] = pd.to_numeric(seats_df["SEAT"], errors="coerce").fillna(0).astype(int)
 
-    seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
-
+    # seat capacity map
     seat_cap = {}
-    seat_index = {}
+    # base key (grp, typ, college, course) → set of categories
+    base_to_cats = {}
 
-    for _, r in seats.iterrows():
-        full = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        base = (r["grp"], r["typ"], r["college"], r["course"])
+    for _, r in seats_df.iterrows():
+        full_key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
+        base_key = (r["grp"], r["typ"], r["college"], r["course"])
 
-        seat_cap[full] = seat_cap.get(full, 0) + r["SEAT"]
+        seat_cap[full_key] = seat_cap.get(full_key, 0) + r["SEAT"]
+        base_to_cats.setdefault(base_key, set()).add(r["category"])
 
-        if base not in seat_index:
-            seat_index[base] = {}
-        seat_index[base][r["category"]] = seat_cap[full]
-
-    # =====================================================
-    # CLEAN CANDIDATES
-    # =====================================================
-    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
-    cand["BRank"] = pd.to_numeric(cand.get("BRank", 0), errors="coerce").fillna(9999999).astype(int)
-    cand["Category"] = cand.get("Category", "").astype(str).str.upper().str.strip()
-    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
-    cand["EligibleOptn"] = cand.get("EligibleOptn", "").astype(str).str.upper().str.strip()
-
-    # Valid candidate filters
-    cand = cand[(cand["BRank"] > 0) & (cand["Status"] != "S")]
-
-    if "EligibleOptn" in cand.columns:
-        cand = cand[cand["EligibleOptn"] != "N"]
-
-    cand = cand.sort_values("BRank")
-
-    # =====================================================
-    # CLEAN OPTIONS
-    # =====================================================
-    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
-    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
-    opts["Optn"]   = opts["Optn"].astype(str).str.upper().str.strip()
-
-    opts = opts[
-        (opts["OPNO"] > 0) &
-        (opts["ValidOption"].astype(str).str.upper() == "Y") &
-        (opts["Delflg"].astype(str).str.upper() != "Y")
-    ]
-
-    opts = opts.sort_values(["RollNo", "OPNO"])
-
-    # Build option index
+    # ---------- Index options by candidate ----------
     opts_by_roll = {}
-    for _, r in opts.iterrows():
+    for _, r in opts_df.iterrows():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
-    st.info(f"Candidates: {len(cand)} | Options: {len(opts)} | Total Seats: {sum(seat_cap.values())}")
+    # Sort options by OPNO inside each candidate → preference order
+    for roll in opts_by_roll:
+        opts_by_roll[roll].sort(key=lambda row: row["OPNO"])
 
-    # =====================================================
-    #      GALE–SHAPLEY STYLE CANDIDATE PROPOSAL
-    # =====================================================
-    allotments = []
+    # ---------- Build preferences ----------
+    prefs = {}
+    rank = {}
 
-    for _, C in cand.iterrows():
-        roll = C["RollNo"]
-        cand_cat = C["Category"]
+    for _, c in cand_df.iterrows():
+        roll = c["RollNo"]
+        brank = int(c["BRank"])
+        rank[roll] = brank
 
+        cand_cat = str(c.get("Category", "")).upper().strip()
         if roll not in opts_by_roll:
             continue
 
-        for op in opts_by_roll[roll]:
+        pref_list = []
+        seen_seats = set()
 
+        for op in opts_by_roll[roll]:
             dec = decode_opt(op["Optn"])
             if not dec:
                 continue
@@ -181,77 +146,249 @@ def bpharm_le_allotment():
             course = dec["course"]
             college = dec["college"]
 
-            base = (grp, typ, college, course)
-            if base not in seat_index:
+            base_key = (grp, typ, college, course)
+            if base_key not in base_to_cats:
                 continue
 
-            available_cats = seat_index[base]
+            cats_here = list(base_to_cats[base_key])
 
-            # Category priority: own category → SM
-            priority = []
-            if cand_cat not in ("", "NA", "NULL", "NAN") and cand_cat in available_cats:
-                priority.append(cand_cat)
-            if "SM" in available_cats:
-                priority.append("SM")
+            # Category ordering for this *option*:
+            #   1) SM (open seat) first
+            #   2) then candidate's own category (SC, EZ, MU…)
+            #   3) then any others (but eligibility will filter them)
+            def cat_priority(cat):
+                cat_u = cat.upper()
+                if cat_u == "SM":
+                    return 0
+                if cat_u == cand_cat and cat_u not in ("", "NA", "NULL", "NAN"):
+                    return 1
+                return 2
 
-            chosen = None
+            cats_here.sort(key=cat_priority)
 
-            for sc in priority:
+            for sc in cats_here:
                 full_key = (grp, typ, college, course, sc)
-
+                if full_key in seen_seats:
+                    continue
                 if seat_cap.get(full_key, 0) <= 0:
                     continue
-
                 if not eligible_for_category(sc, cand_cat):
                     continue
 
-                chosen = (sc, full_key)
+                seen_seats.add(full_key)
+                pref_list.append(full_key)
+
+        if pref_list:
+            prefs[roll] = pref_list
+
+    return prefs, seat_cap, rank
+
+
+def stable_allocation(prefs, seat_cap, rank):
+    """
+    Gale–Shapley stable matching for college admission (capacitated):
+
+      • prefs[roll] is candidate preference list over seat_keys
+      • seat_cap[seat_key] is number of slots
+      • rank[roll] is BRank; lower is better (seat preference over candidates)
+
+    Result:
+      assignments: dict[seat_key] -> list[roll]
+    """
+    assignments = {k: [] for k in seat_cap}
+    next_prop_index = {roll: 0 for roll in prefs}
+    free_candidates = list(prefs.keys())
+
+    def worst_candidate(c_list):
+        return max(c_list, key=lambda r: rank.get(r, 10**9))
+
+    while free_candidates:
+        roll = free_candidates.pop()
+        pref = prefs[roll]
+
+        # Try next seats in preference list until placed or exhausted
+        while next_prop_index[roll] < len(pref):
+            seat_key = pref[next_prop_index[roll]]
+            next_prop_index[roll] += 1
+
+            cap = seat_cap[seat_key]
+            current = assignments[seat_key]
+
+            # Free slot available → accept
+            if len(current) < cap:
+                current.append(roll)
                 break
 
-            if not chosen:
-                continue
+            # Seat is full → may replace worst if this candidate is better
+            worst = worst_candidate(current)
+            if rank.get(roll, 10**9) < rank.get(worst, 10**9):
+                current.remove(worst)
+                current.append(roll)
+                # Evicted candidate gets back to free list if they still have remaining prefs
+                if next_prop_index[worst] < len(prefs[worst]):
+                    free_candidates.append(worst)
+                break
+            # else: seat prefers its current candidates → try next seat in prefs
 
-            sc, full_key = chosen
-            seat_cap[full_key] -= 1
-            seat_index[base][sc] = seat_cap[full_key]
+        # If candidate exhausted prefs → remains unmatched
 
-            allot_code = make_allot_code(grp, typ, course, college, sc)
+    return assignments
 
-            allotments.append({
+
+# =========================================================
+#      Streamlit BLE Page
+# =========================================================
+def bpharm_le_allotment():
+    st.title("💊 B.Pharm Lateral Entry – Gale–Shapley Allotment (BRank-based)")
+
+    st.markdown("Upload the three input files:")
+
+    cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"], key="ble_cand")
+    seat_file = st.file_uploader("2️⃣ Seat Matrix File", type=["csv", "xlsx"], key="ble_seat")
+    opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv", "xlsx"], key="ble_opt")
+
+    if not (cand_file and seat_file and opt_file):
+        return
+
+    # ---------- Load ----------
+    cand = read_any(cand_file)
+    seats = read_any(seat_file)
+    opts = read_any(opt_file)
+
+    st.success("✔ Files loaded successfully")
+
+    # =====================================================
+    # CLEAN CANDIDATES
+    # =====================================================
+    if "RollNo" not in cand.columns or "BRank" not in cand.columns:
+        st.error("Candidate file must contain 'RollNo' and 'BRank' columns.")
+        return
+
+    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
+    cand["BRank"]  = pd.to_numeric(cand["BRank"], errors="coerce").fillna(9999999).astype(int)
+
+    if "Category" not in cand.columns:
+        cand["Category"] = ""
+
+    # Normalise commonly used control columns
+    for col in ["Category", "Minority", "Status", "EligibleOptn"]:
+        if col in cand.columns:
+            cand[col] = cand[col].astype(str).str.upper().str.strip()
+        else:
+            cand[col] = ""
+
+    # Filters:
+    #   • BRank > 0
+    #   • Status != 'S'
+    #   • EligibleOptn != 'N' (if present)
+    mask = cand["BRank"] > 0
+    if "Status" in cand.columns:
+        mask &= (cand["Status"] != "S")
+    if "EligibleOptn" in cand.columns:
+        mask &= (cand["EligibleOptn"] != "N")
+
+    cand = cand[mask].copy()
+    # ordering: best rank first
+    cand = cand.sort_values("BRank")
+
+    # =====================================================
+    # CLEAN OPTIONS
+    # =====================================================
+    required_opt_cols = {"RollNo", "OPNO", "Optn", "ValidOption", "Delflg"}
+    missing = required_opt_cols - set(opts.columns)
+    if missing:
+        st.error(f"Option Entry file missing columns: {', '.join(missing)}")
+        return
+
+    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
+    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
+    opts["Optn"]   = opts["Optn"].astype(str).str.upper().str.strip()
+
+    opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper().str.strip()
+    opts["Delflg"]      = opts["Delflg"].astype(str).str.upper().str.strip()
+
+    opts = opts[
+        (opts["RollNo"] > 0) &
+        (opts["OPNO"] > 0) &
+        (opts["ValidOption"] == "Y") &
+        (opts["Delflg"] != "Y")
+    ].copy()
+
+    opts = opts.sort_values(["RollNo", "OPNO"])
+
+    st.info(f"Candidates considered: {len(cand)} | Options: {len(opts)} | Total seats: {seats['SEAT'].sum()}")
+
+    # =====================================================
+    # BUILD PREFS + RUN GALE–SHAPLEY
+    # =====================================================
+    prefs, seat_cap, rank = build_preferences(cand, opts, seats)
+    st.write(f"Candidates with at least one eligible preference: **{len(prefs)}**")
+
+    assignments = stable_allocation(prefs, seat_cap, rank)
+
+    # -----------------------------------------------------
+    # Pre-index OPNO for (RollNo, grp, typ, college, course)
+    # -----------------------------------------------------
+    op_index = {}
+    for _, r in opts.iterrows():
+        dec = decode_opt(r["Optn"])
+        if not dec:
+            continue
+        key = (r["RollNo"], dec["grp"], dec["typ"], dec["college"], dec["course"])
+        opno = int(r["OPNO"])
+        if key not in op_index or opno < op_index[key]:
+            op_index[key] = opno
+
+    # =====================================================
+    # BUILD RESULT
+    # =====================================================
+    records = []
+    for seat_key, rlist in assignments.items():
+        grp, typ, college, course, seat_cat = seat_key
+        for roll in rlist:
+            row = cand[cand["RollNo"] == roll].head(1)
+            brank = int(row["BRank"].iloc[0]) if not row.empty else None
+            cand_cat = row["Category"].iloc[0] if not row.empty else ""
+
+            opno = op_index.get((roll, grp, typ, college, course), None)
+            allot_code = make_allot_code(grp, typ, course, college, seat_cat)
+
+            records.append({
                 "RollNo": roll,
-                "BRank": C["BRank"],
-                "Category": cand_cat,
+                "BRank": brank,
+                "CandidateCategory": cand_cat,
                 "grp": grp,
                 "typ": typ,
                 "College": college,
                 "Course": course,
-                "SeatCategory": sc,
+                "SeatCategory": seat_cat,
+                "OPNO": opno,
                 "AllotCode": allot_code,
-                "OPNO": op["OPNO"],
             })
 
-            break  # stop after first valid allotment
+    result = pd.DataFrame(records).sort_values(["BRank", "RollNo"])
 
-    # =====================================================
-    # OUTPUT
-    # =====================================================
-    result = pd.DataFrame(allotments)
-
-    st.subheader("🎉 Allotment Completed")
+    st.subheader("✅ BLE Allotment (Stable, BRank-based)")
     st.write(f"Total Allotted: **{len(result)}**")
 
     if not result.empty:
-        st.dataframe(result)
+        st.dataframe(result, use_container_width=True)
 
         buf = BytesIO()
         result.to_csv(buf, index=False)
         buf.seek(0)
 
         st.download_button(
-            "⬇ Download BLE Allotment",
+            "⬇ Download BPharm LE Allotment CSV",
             buf,
-            "BLE_Allotment.csv",
+            "BPharm_LE_Allotment.csv",
             "text/csv",
         )
     else:
-        st.warning("⚠ No candidates allotted — check seat matrix / category rules / options.")
+        st.warning("No candidates were allotted. Check category codes, seat matrix and options.")
+
+
+# Standalone run support (optional)
+if __name__ == "__main__":
+    st.set_page_config("BLE Allotment", layout="wide")
+    bpharm_le_allotment()
