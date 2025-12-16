@@ -93,7 +93,9 @@ def llm_allotment():
     # =====================================================
     cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"].copy()   # 🚫 HARD EXCLUSION
-
+    if phase == 2:
+        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
+        cand = cand[cand["ConfirmFlag"] == "Y"].copy()
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
     cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
 
