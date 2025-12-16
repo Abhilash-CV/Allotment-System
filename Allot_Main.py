@@ -1,253 +1,217 @@
 import streamlit as st
-import pandas as pd
-from io import BytesIO
+from dnm import dnm_allotment
+from pga_stray import pga_allotment
+from pgm import pg_med_allotment
+from bpharm_le import bpharm_le_allotment
+from llm_allotment import llm_allotment
+# ==========================================
+#            PAGE CONFIG
+# ==========================================
+st.set_page_config(page_title="Admission System", layout="wide", page_icon="🎓")
 
-# =====================================================
-# Helpers
-# =====================================================
+# ==========================================
+#            CLEAN MINIMAL LOGIN CSS
+# ==========================================
+CLEAN_CSS = """
+<style>
 
-def read_any(f):
-    if f.name.lower().endswith((".xlsx", ".xls")):
-        return pd.read_excel(f)
-    return pd.read_csv(f, encoding="ISO-8859-1", on_bad_lines="skip")
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
 
-def decode_opt(opt):
-    opt = str(opt).upper().strip()
-    if len(opt) < 7:
-        return None
-    return {
-        "grp": opt[0],
-        "typ": opt[1],
-        "course": opt[2:4],
-        "college": opt[4:7],
+    body {
+        background: #f6f7fb !important;
     }
 
-def eligible_for_seat(seat_cat, cand_cat, special3):
-    if seat_cat == "SM":
-        return True
-    if seat_cat == "PD":
-        return special3 == "PD"
-    if cand_cat in ("", "NA", "NULL"):
-        return False
-    return seat_cat == cand_cat
+    /* Center the login container */
+    .center-login {
+        display: flex;
+        justify-content: center;
+        margin-top: 120px;
+    }
 
-def make_allot_code(g, t, c, col, cat):
-    cat2 = cat[:2]
-    return f"{g}{t}{c}{col}{cat2}{cat2}"
+    /* Login Card */
+    .login-card {
+        width: 300px;
+        background: #ffffff;
+        padding: 20px 20px;
+        border-radius: 15px;
+        box-shadow: 0px 8px 20px rgba(0,0,0,0.08);
+        text-align: left;
+    }
 
-# =====================================================
-# MAIN
-# =====================================================
+    .login-title {
+        font-size: 30px !important;
+        font-weight: 800 !important;
+        color: #1e293b;
+        margin-bottom: 20px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
 
-def llm_allotment():
+    .login-input {
+        margin-bottom: 14px;
+    }
 
-    st.title("⚖️ LLM Allotment – Official Counselling Logic")
+    .login-btn button {
+        width: 100%;
+        padding: 10px;
+        border-radius: 8px !important;
+        font-size: 16px !important;
+    }
 
-    phase = st.selectbox("Select Phase", [1,2,3,4])
+    /* Header for main app */
+    .app-header {
+        background: #1e40af;
+        padding: 16px;
+        border-radius: 10px;
+        margin-bottom: 18px;
+    }
+    .app-header h1 {
+        color: white;
+        font-size: 24px;
+        margin: 0;
+        font-weight: 600;
+    }
 
-    cand_file = st.file_uploader("1️⃣ Candidates", ["csv","xlsx"])
-    opt_file  = st.file_uploader("2️⃣ Option Entry", ["csv","xlsx"])
-    seat_file = st.file_uploader("3️⃣ Seat Matrix", ["csv","xlsx"])
-    prev_file = None
-    if phase > 1:
-        prev_file = st.file_uploader("4️⃣ Previous Allotment", ["csv","xlsx"])
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background: #f1f5f9;
+        border-right: 1px solid #d4d4d8;
+    }
 
-    if not (cand_file and opt_file and seat_file):
-        return
+    .menu-item {
+        padding: 10px 12px;
+        margin: 6px 0;
+        border-radius: 8px;
+        background: white;
+        border: 1px solid #e2e8f0;
+        font-size: 16px;
+        font-weight: 600;
+    }
 
-    # -------------------------------------------------
-    # LOAD
-    # -------------------------------------------------
-    cand = read_any(cand_file)
-    opts = read_any(opt_file)
-    seats = read_any(seat_file)
-    prev  = read_any(prev_file) if prev_file else None
+    .menu-item:hover {
+        background: #1e3a8a;
+        color: white;
+    }
 
-    # -------------------------------------------------
-    # CANDIDATES
-    # -------------------------------------------------
-    cand["Status"] = cand.get("Status","").astype(str).str.upper()
-    cand = cand[cand["Status"] != "S"]
+    .menu-selected {
+        background: #1e293b !important;
+        color: white !important;
+    }
 
-    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
-    cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
-    cand["Category"] = cand.get("Category","").astype(str).str.upper()
-    cand["Special3"] = cand.get("Special3","").astype(str).str.upper()
+</style>
+"""
+st.markdown(CLEAN_CSS, unsafe_allow_html=True)
 
-    cand = cand.sort_values("LRank")
 
-    # -------------------------------------------------
-    # OPTIONS
-    # -------------------------------------------------
-    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
-    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
-    opts["ValidOption"] = opts.get("ValidOption","Y").astype(str).str.upper()
+# ==========================================
+#            LOGIN SYSTEM
+# ==========================================
+VALID_USERS = {
+    "admin": "admin123",
+    "user": "user123"
+}
 
-    opts = opts[
-        (opts["OPNO"] > 0) &
-        (opts["ValidOption"].isin(["Y","T"])) &
-        (opts.get("Delflg","N").astype(str).str.upper() != "Y")
-    ]
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "menu_choice" not in st.session_state:
+    st.session_state.menu_choice = "DNM"
 
-    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
-    opts = opts.sort_values(["RollNo","OPNO"])
 
-    opts_by_roll = {}
-    for _,r in opts.iterrows():
-        opts_by_roll.setdefault(r["RollNo"], []).append(r)
+# ==========================================
+#            LOGIN PAGE
+# ==========================================
+def login_page():
 
-    # -------------------------------------------------
-    # SEATS
-    # -------------------------------------------------
-    for c in ["grp","typ","college","course","category"]:
-        seats[c] = seats[c].astype(str).str.upper()
+    st.markdown("<div class='center-login'>", unsafe_allow_html=True)
+    st.markdown("<div class='login-card'>", unsafe_allow_html=True)
 
-    seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
+    st.markdown("""
+        <div class='login-title'>
+            🔐 Login
+        </div>
+    """, unsafe_allow_html=True)
 
-    seat_cap = {}
-    for _,r in seats.iterrows():
-        k = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_cap[k] = seat_cap.get(k,0) + r["SEAT"]
+    # Inputs
+    username = st.text_input("Username", key="login_user")
+    password = st.text_input("Password", type="password", key="login_pass")
 
-    # -------------------------------------------------
-    # PROTECTED
-    # -------------------------------------------------
-    protected = {}
-    if prev is not None:
-        join_col = f"JoinStatus_{phase-1}"
-        op_col   = f"OPNO_{phase-1}"
+    # Login Button
+    st.markdown("<div class='login-btn'>", unsafe_allow_html=True)
+    if st.button("Login"):
+        if username in VALID_USERS and VALID_USERS[username] == password:
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("❌ Invalid username or password")
+    st.markdown("</div>", unsafe_allow_html=True)
 
-        for _,r in prev.iterrows():
-            if str(r.get("Status","")).upper() == "S":
-                continue
-            if str(r.get(join_col,"")).upper() not in ("","Y"):
-                continue
+    st.markdown("</div></div>", unsafe_allow_html=True)
 
-            code = str(r.get("Curr_Admn","")).upper()
-            if len(code) < 9:
-                continue
 
-            protected[int(r["RollNo"])] = {
-                "grp": code[0],
-                "typ": code[1],
-                "course": code[2:4],
-                "college": code[4:7],
-                "cat": code[7:9],
-                "opno": int(r.get(op_col,9999))
-            }
+# ==========================================
+#            FUTURE MODULE
+# ==========================================
+def future_program():
+    st.markdown("<div class='app-header'><h1>🛠 Future Tools</h1></div>", unsafe_allow_html=True)
+    st.info("Upcoming modules will appear here.")
 
-    # -------------------------------------------------
-    # PHASE-2 CONFIRM FLAG
-    # -------------------------------------------------
-    if phase == 2:
-        cand["ConfirmFlag"] = cand.get("ConfirmFlag","").astype(str).str.upper()
-        cand = cand[
-            (cand["ConfirmFlag"] == "Y") |
-            (cand["RollNo"].isin(protected.keys()))
-        ]
 
-    # -------------------------------------------------
-    # ALLOTMENT (CORE LOGIC)
-    # -------------------------------------------------
-    results = []
+# ==========================================
+#            MAIN APPLICATION
+# ==========================================
+def main_app():
 
-    for _,C in cand.iterrows():
-        roll = C["RollNo"]
-        cat  = C["Category"]
-        sp3  = C["Special3"]
-        current = protected.get(roll)
-        allotted = False
+    st.markdown("<div class='app-header'><h1>🎓 Admission Management System</h1></div>", unsafe_allow_html=True)
 
-        for op in opts_by_roll.get(roll, []):
-            dec = decode_opt(op["Optn"])
-            if not dec:
-                continue
+    st.sidebar.title("Navigation")
 
-            # 1️⃣ SM FIRST (same option)
-            for (g,t,col,crs,sc),cap in seat_cap.items():
-                if cap <= 0 or sc != "SM":
-                    continue
-                if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
-                    continue
-                if not eligible_for_seat(sc,cat,sp3):
-                    continue
+    menu_options = {
+        "PGA": "📘 PGA Allotment",
+        "DNM": "🧮 DNM Allotment",
+        "PGM": "📘 PGM Allotment",
+        "BLE": "📘 BLE Allotment",
+        "LLM": "📘 LLM Allotment",
+        "Future": "🛠 Future Tools"
+    }
 
-                seat_cap[(g,t,col,crs,sc)] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": col,
-                    "Course": crs,
-                    "SeatCategory": sc,
-                    "OPNO": op["OPNO"],
-                    "AllotCode": make_allot_code(g,t,crs,col,sc)
-                })
-                allotted = True
-                break
+    for key, label in menu_options.items():
 
-            if allotted:
-                break
+        css_class = "menu-item"
+        if st.session_state.menu_choice == key:
+            css_class += " menu-selected"
 
-            # 2️⃣ CATEGORY SEAT (same option)
-            for (g,t,col,crs,sc),cap in seat_cap.items():
-                if cap <= 0 or sc == "SM":
-                    continue
-                if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
-                    continue
-                if not eligible_for_seat(sc,cat,sp3):
-                    continue
+        if st.sidebar.button(label, key=f"menu_{key}", use_container_width=True):
+            st.session_state.menu_choice = key
+            st.rerun()
 
-                seat_cap[(g,t,col,crs,sc)] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": col,
-                    "Course": crs,
-                    "SeatCategory": sc,
-                    "OPNO": op["OPNO"],
-                    "AllotCode": make_allot_code(g,t,crs,col,sc)
-                })
-                allotted = True
-                break
+    if st.sidebar.button("🚪 Logout", key="logout", use_container_width=True):
+        st.session_state.logged_in = False
+        st.rerun()
 
-            if allotted:
-                break
+    # Routing
+    selected = st.session_state.menu_choice
 
-        # 3️⃣ PROTECTED CURRENT
-        if not allotted and current:
-            k = (
-                current["grp"], current["typ"],
-                current["college"], current["course"], current["cat"]
-            )
-            if seat_cap.get(k,0) > 0:
-                seat_cap[k] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": current["college"],
-                    "Course": current["course"],
-                    "SeatCategory": current["cat"],
-                    "OPNO": current["opno"],
-                    "AllotCode": make_allot_code(
-                        current["grp"], current["typ"],
-                        current["course"], current["college"], current["cat"]
-                    )
-                })
+    if selected == "PGA":
+        pga_allotment()
+    elif selected == "DNM":
+        dnm_allotment()
+        # In your menu routing:
+    elif selected == "PGM":   # or whatever label you choose
+        pg_med_allotment()
+    elif selected == "BLE":
+        bpharm_le_allotment()
+    elif selected == "LLM":
+        llm_allotment()
+    else:
+        future_program()
 
-    # -------------------------------------------------
-    # OUTPUT
-    # -------------------------------------------------
-    df = pd.DataFrame(results)
-    st.success(f"✅ Phase {phase} Completed")
-    st.write(f"Total Allotted: **{len(df)}**")
-    st.dataframe(df)
 
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    st.download_button(
-        "⬇ Download Result",
-        buf,
-        f"LLM_Allotment_Phase{phase}.csv",
-        "text/csv"
-    )
+# ==========================================
+#            APP FLOW
+# ==========================================
+if st.session_state.logged_in:
+    main_app()
+else:
+    login_page()
