@@ -3,6 +3,7 @@ from dnm import dnm_allotment
 from pga_stray import pga_allotment
 from pgm import pg_med_allotment
 from bpharm_le import bpharm_le_allotment
+from llm_allotment import llm_allotment
 # ==========================================
 #            PAGE CONFIG
 # ==========================================
@@ -171,6 +172,7 @@ def main_app():
         "DNM": "🧮 DNM Allotment",
         "PGM": "📘 PGM Allotment",
         "BLE": "📘 BLE Allotment",
+        "LLM": "📘 LLM Allotment",
         "Future": "🛠 Future Tools"
     }
 
@@ -200,6 +202,8 @@ def main_app():
         pg_med_allotment()
     elif selected == "BLE":
         bpharm_le_allotment()
+    elif selected == "LLM":
+        llm_allotment()
     else:
         future_program()
 
