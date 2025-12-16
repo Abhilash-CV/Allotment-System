@@ -64,66 +64,78 @@ def llm_allotment():
     prev  = read_any(prev_file) if prev_file else None
 
     # -------------------------------------------------
-    # CANDIDATES
+    # CANDIDATES (SAFE COLUMN HANDLING)
     # -------------------------------------------------
-    cand["Status"] = cand.get("Status","").astype(str).str.upper()
+    if "Status" in cand.columns:
+        cand["Status"] = cand["Status"].astype(str).str.upper().str.strip()
+    else:
+        cand["Status"] = ""
+
     cand = cand[cand["Status"] != "S"]
 
-    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
-    cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
-    cand["Category"] = cand.get("Category","").astype(str).str.upper()
-    cand["Special3"] = cand.get("Special3","").astype(str).str.upper()
+    cand["RollNo"] = pd.to_numeric(cand.get("RollNo",0), errors="coerce").fillna(0).astype(int)
+    cand["LRank"]  = pd.to_numeric(cand.get("LRank",999999), errors="coerce").fillna(999999).astype(int)
+
+    cand["Category"] = cand["Category"].astype(str).str.upper().str.strip() if "Category" in cand.columns else ""
+    cand["Special3"] = cand["Special3"].astype(str).str.upper().str.strip() if "Special3" in cand.columns else ""
 
     cand = cand.sort_values("LRank")
 
     # -------------------------------------------------
     # OPTIONS
     # -------------------------------------------------
-    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
-    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
-    opts["ValidOption"] = opts.get("ValidOption","Y").astype(str).str.upper()
+    opts["RollNo"] = pd.to_numeric(opts.get("RollNo",0), errors="coerce").fillna(0).astype(int)
+    opts["OPNO"]   = pd.to_numeric(opts.get("OPNO",0), errors="coerce").fillna(0).astype(int)
+
+    if "ValidOption" in opts.columns:
+        opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper().str.strip()
+    else:
+        opts["ValidOption"] = "Y"
+
+    if "Delflg" not in opts.columns:
+        opts["Delflg"] = "N"
 
     opts = opts[
         (opts["OPNO"] > 0) &
         (opts["ValidOption"].isin(["Y","T"])) &
-        (opts.get("Delflg","N").astype(str).str.upper() != "Y")
+        (opts["Delflg"].astype(str).str.upper() != "Y")
     ]
 
     opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
     opts = opts.sort_values(["RollNo","OPNO"])
 
     opts_by_roll = {}
-    for _,r in opts.iterrows():
+    for _, r in opts.iterrows():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
     # -------------------------------------------------
     # SEATS
     # -------------------------------------------------
     for c in ["grp","typ","college","course","category"]:
-        seats[c] = seats[c].astype(str).str.upper()
+        seats[c] = seats[c].astype(str).str.upper().str.strip()
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
     seat_cap = {}
-    for _,r in seats.iterrows():
-        k = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_cap[k] = seat_cap.get(k,0) + r["SEAT"]
+    for _, r in seats.iterrows():
+        key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
+        seat_cap[key] = seat_cap.get(key, 0) + r["SEAT"]
 
     # -------------------------------------------------
-    # PROTECTED
+    # PROTECTED CANDIDATES
     # -------------------------------------------------
     protected = {}
     if prev is not None:
         join_col = f"JoinStatus_{phase-1}"
         op_col   = f"OPNO_{phase-1}"
 
-        for _,r in prev.iterrows():
+        for _, r in prev.iterrows():
             if str(r.get("Status","")).upper() == "S":
                 continue
             if str(r.get(join_col,"")).upper() not in ("","Y"):
                 continue
 
-            code = str(r.get("Curr_Admn","")).upper()
+            code = str(r.get("Curr_Admn","")).upper().strip()
             if len(code) < 9:
                 continue
 
@@ -133,14 +145,18 @@ def llm_allotment():
                 "course": code[2:4],
                 "college": code[4:7],
                 "cat": code[7:9],
-                "opno": int(r.get(op_col,9999))
+                "opno": int(r.get(op_col,9999)) if str(r.get(op_col,"")).isdigit() else 9999
             }
 
     # -------------------------------------------------
     # PHASE-2 CONFIRM FLAG
     # -------------------------------------------------
     if phase == 2:
-        cand["ConfirmFlag"] = cand.get("ConfirmFlag","").astype(str).str.upper()
+        if "ConfirmFlag" in cand.columns:
+            cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip()
+        else:
+            cand["ConfirmFlag"] = ""
+
         cand = cand[
             (cand["ConfirmFlag"] == "Y") |
             (cand["RollNo"].isin(protected.keys()))
@@ -151,7 +167,7 @@ def llm_allotment():
     # -------------------------------------------------
     results = []
 
-    for _,C in cand.iterrows():
+    for _, C in cand.iterrows():
         roll = C["RollNo"]
         cat  = C["Category"]
         sp3  = C["Special3"]
@@ -164,14 +180,11 @@ def llm_allotment():
                 continue
 
             # 1️⃣ SM FIRST (same option)
-            for (g,t,col,crs,sc),cap in seat_cap.items():
+            for (g,t,col,crs,sc), cap in seat_cap.items():
                 if cap <= 0 or sc != "SM":
                     continue
                 if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
                     continue
-                if not eligible_for_seat(sc,cat,sp3):
-                    continue
-
                 seat_cap[(g,t,col,crs,sc)] -= 1
                 results.append({
                     "RollNo": roll,
@@ -189,14 +202,13 @@ def llm_allotment():
                 break
 
             # 2️⃣ CATEGORY SEAT (same option)
-            for (g,t,col,crs,sc),cap in seat_cap.items():
+            for (g,t,col,crs,sc), cap in seat_cap.items():
                 if cap <= 0 or sc == "SM":
                     continue
                 if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
                     continue
-                if not eligible_for_seat(sc,cat,sp3):
+                if not eligible_for_seat(sc, cat, sp3):
                     continue
-
                 seat_cap[(g,t,col,crs,sc)] -= 1
                 results.append({
                     "RollNo": roll,
