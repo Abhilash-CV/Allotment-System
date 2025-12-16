@@ -91,7 +91,7 @@ def llm_allotment():
     for col in ["Category", "Special3"]:
         cand[col] = cand.get(col, "").astype(str).str.upper().str.strip()
 
-    cand = cand.sort_values("LRank")
+    cand = cand.sort_values("LRank")  # IMPORTANT: strictly ascending LRank
 
     # =====================================================
     # CLEAN OPTIONS
@@ -130,9 +130,7 @@ def llm_allotment():
     # PROTECTION (Phase ≥ 2)
     # =====================================================
     protected = {}
-
     if phase > 1 and allot_prev is not None:
-
         join_col = f"JoinStatus_{phase-1}"
         op_col   = f"OPNO_{phase-1}"
 
@@ -155,8 +153,7 @@ def llm_allotment():
                 "course": code[2:4],
                 "college": code[4:7],
                 "cat": code[7:9],
-                "opno": int(r.get(op_col, 9999))
-                if str(r.get(op_col, "")).isdigit() else 9999
+                "opno": int(r.get(op_col, 9999)) if str(r.get(op_col, "")).isdigit() else 9999
             }
 
     # =====================================================
@@ -164,18 +161,18 @@ def llm_allotment():
     # =====================================================
     if phase == 2:
         cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
-        # Keep candidates who either confirmed OR are protected
+        # Keep only ConfirmFlag=Y or already protected
         cand = cand[
             (cand["ConfirmFlag"] == "Y") |
             (cand["RollNo"].isin(protected.keys()))
         ].copy()
 
     # =====================================================
-    # ALLOTMENT LOOP (GALE–SHAPLEY)
+    # ALLOTMENT LOOP (GALE–SHAPLEY with strict LRank)
     # =====================================================
     results = []
 
-    for _, C in cand.iterrows():
+    for _, C in cand.iterrows():  # Strict LRank order
 
         roll = C["RollNo"]
         cat  = C["Category"]
@@ -184,9 +181,10 @@ def llm_allotment():
         current = protected.get(roll)
         best = None
 
-        # ======== Try options first ========
+        # Try all options respecting current allotment (if any)
         for op in opts_by_roll.get(roll, []):
 
+            # Skip options worse than current (protected)
             if current and op["OPNO"] >= current["opno"]:
                 continue
 
@@ -214,8 +212,7 @@ def llm_allotment():
         # ======== Allocate seat ========
         if best:
             g, t, crs, col, sc, opno = best
-            seat_cap[(g, t, col, crs, sc)] -= 1  # Deduct seat
-
+            seat_cap[(g, t, col, crs, sc)] -= 1
             results.append({
                 "RollNo": roll,
                 "LRank": C["LRank"],
@@ -226,25 +223,23 @@ def llm_allotment():
                 "AllotCode": make_allot_code(g, t, crs, col, sc)
             })
 
-        # ======== Protected candidate ========
+        # If no new option, but protected candidate, allot current seat (if still available)
         elif current:
             key = (current["grp"], current["typ"], current["college"], current["course"], current["cat"])
-            # Deduct seat if available
             if seat_cap.get(key, 0) > 0:
                 seat_cap[key] -= 1
-
-            results.append({
-                "RollNo": roll,
-                "LRank": C["LRank"],
-                "College": current["college"],
-                "Course": current["course"],
-                "SeatCategory": current["cat"],
-                "OPNO": current["opno"],
-                "AllotCode": make_allot_code(
-                    current["grp"], current["typ"],
-                    current["course"], current["college"], current["cat"]
-                )
-            })
+                results.append({
+                    "RollNo": roll,
+                    "LRank": C["LRank"],
+                    "College": current["college"],
+                    "Course": current["course"],
+                    "SeatCategory": current["cat"],
+                    "OPNO": current["opno"],
+                    "AllotCode": make_allot_code(
+                        current["grp"], current["typ"],
+                        current["course"], current["college"], current["cat"]
+                    )
+                })
 
     # =====================================================
     # OUTPUT
