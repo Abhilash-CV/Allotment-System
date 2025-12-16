@@ -164,7 +164,7 @@ def llm_allotment():
     # =====================================================
     if phase == 2:
         cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
-
+        # Keep candidates who either confirmed OR are protected
         cand = cand[
             (cand["ConfirmFlag"] == "Y") |
             (cand["RollNo"].isin(protected.keys()))
@@ -184,6 +184,7 @@ def llm_allotment():
         current = protected.get(roll)
         best = None
 
+        # ======== Try options first ========
         for op in opts_by_roll.get(roll, []):
 
             if current and op["OPNO"] >= current["opno"]:
@@ -210,9 +211,10 @@ def llm_allotment():
             if best:
                 break
 
+        # ======== Allocate seat ========
         if best:
             g, t, crs, col, sc, opno = best
-            seat_cap[(g, t, col, crs, sc)] -= 1
+            seat_cap[(g, t, col, crs, sc)] -= 1  # Deduct seat
 
             results.append({
                 "RollNo": roll,
@@ -224,7 +226,13 @@ def llm_allotment():
                 "AllotCode": make_allot_code(g, t, crs, col, sc)
             })
 
+        # ======== Protected candidate ========
         elif current:
+            key = (current["grp"], current["typ"], current["college"], current["course"], current["cat"])
+            # Deduct seat if available
+            if seat_cap.get(key, 0) > 0:
+                seat_cap[key] -= 1
+
             results.append({
                 "RollNo": roll,
                 "LRank": C["LRank"],
