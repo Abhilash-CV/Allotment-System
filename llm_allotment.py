@@ -15,10 +15,13 @@ def read_any(f):
 
 def decode_opt(opt):
     """
-    LLM option code:
-    0-1 : Program+Type (eg LG)
-    2-3 : Course
-    4-6 : College
+    Option format (example):
+    L G COU COL CATCAT
+    index:
+      0   : grp
+      1   : typ
+      2-3 : course
+      4-6 : college
     """
     opt = str(opt).upper().strip()
     if len(opt) < 7:
@@ -31,226 +34,222 @@ def decode_opt(opt):
     }
 
 
-def eligible_category(seat_cat, cand_cat, special3):
-    seat_cat = seat_cat.upper().strip()
-    cand_cat = cand_cat.upper().strip()
-    special3 = special3.upper().strip()
+def eligible_for_seat(seat_cat, cand_cat, special3):
+    seat_cat = seat_cat.upper()
+    cand_cat = cand_cat.upper()
 
-    # PD rule
+    # PD seat
     if seat_cat == "PD":
         return special3 == "PD"
 
-    # SM open
+    # SM seat → anyone
     if seat_cat == "SM":
         return True
 
-    # NA/NULL only SM
-    if cand_cat in ("", "NA", "NULL"):
+    # NA / NULL → SM only
+    if cand_cat in ("NA", "", "NULL"):
         return False
 
     return seat_cat == cand_cat
 
 
-def make_allot_code(grp, typ, course, college, seat_cat):
-    sc = seat_cat[:2].upper()
-    return f"{grp}{typ}{course}{college}{sc}{sc}"
+def make_allot_code(grp, typ, course, college, cat):
+    cat2 = cat[:2]
+    return f"{grp}{typ}{course}{college}{cat2}{cat2}"
 
 
 # =========================================================
-# MAIN LLM ALLOTMENT
+# MAIN ENGINE
 # =========================================================
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Allotment – Gale Shapley (Correct & Protected)")
+    st.title("⚖️ LLM Allotment – Gale–Shapley (Multi-Phase)")
 
-    cand_file = st.file_uploader("1️⃣ Candidates", type=["csv","xlsx"])
-    opt_file  = st.file_uploader("2️⃣ Option Entry", type=["csv","xlsx"])
-    seat_file = st.file_uploader("3️⃣ Seat Matrix", type=["csv","xlsx"])
-    prev_file = st.file_uploader("4️⃣ Allotment Details (Phase-1 / Prev)", type=["csv","xlsx"])
+    phase = st.selectbox("Select Phase", [1, 2, 3, 4], index=0)
 
-    if not (cand_file and opt_file and seat_file):
+    cand_file = st.file_uploader("1️⃣ Candidates", type=["csv", "xlsx"])
+    opt_file  = st.file_uploader("2️⃣ Option Entry", type=["csv", "xlsx"])
+    seat_file = st.file_uploader("3️⃣ Seat Category", type=["csv", "xlsx"])
+
+    allot_file = None
+    if phase > 1:
+        allot_file = st.file_uploader("4️⃣ Allotment Details (Previous Phase)", type=["csv", "xlsx"])
+
+    if not cand_file or not opt_file or not seat_file:
         return
 
-    # -----------------------------------------------------
-    # LOAD
-    # -----------------------------------------------------
+    # ---------------- LOAD ----------------
     cand = read_any(cand_file)
     opts = read_any(opt_file)
     seats = read_any(seat_file)
-    prev  = read_any(prev_file) if prev_file else pd.DataFrame()
 
-    # -----------------------------------------------------
+    allot_prev = None
+    if phase > 1 and allot_file:
+        allot_prev = read_any(allot_file)
+
+    # =====================================================
+    # CLEAN CANDIDATES
+    # =====================================================
+    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
+    cand = cand[cand["Status"] != "S"].copy()   # 🚫 HARD EXCLUSION
+
+    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
+    cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
+
+    for col in ["Category", "Special3"]:
+        cand[col] = cand.get(col, "").astype(str).str.upper().str.strip()
+
+    cand = cand.sort_values("LRank")
+
+    # =====================================================
+    # CLEAN OPTIONS
+    # =====================================================
+    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
+    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
+    opts["ValidOption"] = opts.get("ValidOption", "Y").astype(str).str.upper()
+
+    opts = opts[
+        (opts["OPNO"] > 0) &
+        (opts["ValidOption"].isin(["Y", "T"])) &
+        (opts.get("Delflg", "N").astype(str).str.upper() != "Y")
+    ].copy()
+
+    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
+    opts = opts.sort_values(["RollNo", "OPNO"])
+
+    opts_by_roll = {}
+    for _, r in opts.iterrows():
+        opts_by_roll.setdefault(r["RollNo"], []).append(r)
+
+    # =====================================================
     # CLEAN SEATS
-    # -----------------------------------------------------
-    for c in ["grp","typ","college","course","category"]:
+    # =====================================================
+    for c in ["grp", "typ", "college", "course", "category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
     seat_cap = {}
     for _, r in seats.iterrows():
-        key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_cap[key] = seat_cap.get(key, 0) + r["SEAT"]
+        k = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
+        seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
-    TOTAL_SEATS = sum(seat_cap.values())
-
-    # -----------------------------------------------------
-    # PROTECT PREVIOUS ADMISSIONS (CRITICAL)
-    # -----------------------------------------------------
+    # =====================================================
+    # PROTECTION (Phase ≥ 2)
+    # =====================================================
     protected = {}
+    if phase > 1 and allot_prev is not None:
 
-    if not prev.empty:
-        for _, r in prev.iterrows():
-            if str(r.get("Curr_Admn","")).strip() == "":
-                continue
-            if str(r.get("JoinStatus_1","")).upper() != "Y":
-                continue
+        join_col = f"JoinStatus_{phase-1}"
+        op_col   = f"OPNO_{phase-1}"
 
-            code = r["Curr_Admn"]
-            grp, typ = code[0], code[1]
-            course, college = code[2:4], code[4:7]
-            seat_cat = code[7:9]
+        for _, r in allot_prev.iterrows():
 
-            key = (grp, typ, college, course, seat_cat)
-
-            # deduct physical seat
-            if seat_cap.get(key, 0) <= 0:
+            if str(r.get("Status", "")).upper() == "S":
                 continue
 
-            seat_cap[key] -= 1
+            js = str(r.get(join_col, "")).upper()
+            if js not in ("Y", ""):
+                continue
+
+            code = str(r.get("Curr_Admn", "")).upper().strip()
+            if len(code) < 9:
+                continue
 
             protected[int(r["RollNo"])] = {
-                "RollNo": int(r["RollNo"]),
-                "AllotCode": code,
-                "grp": grp,
-                "typ": typ,
-                "college": college,
-                "course": course,
-                "SeatCategory": seat_cat,
-                "OPNO": r.get("OPNO_1", 0),
+                "grp": code[0],
+                "typ": code[1],
+                "course": code[2:4],
+                "college": code[4:7],
+                "cat": code[7:9],
+                "opno": int(r.get(op_col, 9999)) if str(r.get(op_col, "")).isdigit() else 9999
             }
 
-    # -----------------------------------------------------
-    # CLEAN CANDIDATES
-    # -----------------------------------------------------
-    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").astype("Int64")
-    cand["Lrank"]  = pd.to_numeric(cand["Lrank"], errors="coerce").fillna(9999999)
-
-    for c in ["Category","Special3","Status","ConfirmFlag"]:
-        cand[c] = cand.get(c,"").astype(str).str.upper().str.strip()
-
-    # Phase-2 rule
-    cand = cand[
-        (cand["Status"] != "S") &
-        (cand["ConfirmFlag"] == "Y")
-    ].copy()
-
-    cand = cand.sort_values("Lrank")
-
-    # -----------------------------------------------------
-    # CLEAN OPTIONS
-    # -----------------------------------------------------
-    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").astype("Int64")
-    opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0)
-
-    opts["ValidOption"] = opts.get("ValidOption","Y").astype(str).str.upper()
-    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
-
-    opts = opts[
-        (opts["OPNO"] > 0) &
-        (opts["ValidOption"].isin(["Y","T"]))
-    ].sort_values(["RollNo","OPNO"])
-
-    opts_by_roll = {}
-    for _, r in opts.iterrows():
-        opts_by_roll.setdefault(int(r["RollNo"]), []).append(r)
-
-    # -----------------------------------------------------
-    # ALLOTMENT ENGINE
-    # -----------------------------------------------------
+    # =====================================================
+    # ALLOTMENT LOOP (GALE–SHAPLEY)
+    # =====================================================
     results = []
-    occupied = set()
 
-    for _, c in cand.iterrows():
+    for _, C in cand.iterrows():
 
-        roll = int(c["RollNo"])
-        cat  = c["Category"]
-        sp3  = c["Special3"]
+        roll = C["RollNo"]
+        cat  = C["Category"]
+        sp3  = C["Special3"]
 
         current = protected.get(roll)
+
         best = None
 
         for op in opts_by_roll.get(roll, []):
+
+            if current and op["OPNO"] >= current["opno"]:
+                continue
+
             dec = decode_opt(op["Optn"])
             if not dec:
                 continue
 
-            for seat_cat in seats["category"].unique():
+            for (g, t, col, crs, sc), cap in seat_cap.items():
 
-                key = (
-                    dec["grp"],
-                    dec["typ"],
-                    dec["college"],
-                    dec["course"],
-                    seat_cat
-                )
-
-                if seat_cap.get(key, 0) <= 0:
+                if cap <= 0:
                     continue
 
-                if not eligible_category(seat_cat, cat, sp3):
+                if (g, t, col, crs) != (dec["grp"], dec["typ"], dec["college"], dec["course"]):
                     continue
 
-                # upgrade check
-                if current and op["OPNO"] >= current["OPNO"]:
+                if not eligible_for_seat(sc, cat, sp3):
                     continue
 
-                best = {
-                    "RollNo": roll,
-                    "OPNO": op["OPNO"],
-                    "grp": dec["grp"],
-                    "typ": dec["typ"],
-                    "college": dec["college"],
-                    "course": dec["course"],
-                    "SeatCategory": seat_cat,
-                    "AllotCode": make_allot_code(
-                        dec["grp"], dec["typ"],
-                        dec["course"], dec["college"],
-                        seat_cat
-                    )
-                }
+                best = (g, t, crs, col, sc, op["OPNO"])
                 break
 
             if best:
                 break
 
         if best:
-            seat_cap[(best["grp"],best["typ"],best["college"],best["course"],best["SeatCategory"])] -= 1
-            results.append(best)
-            occupied.add(roll)
+            g, t, crs, col, sc, opno = best
+            seat_cap[(g, t, col, crs, sc)] -= 1
+
+            results.append({
+                "RollNo": roll,
+                "LRank": C["LRank"],
+                "College": col,
+                "Course": crs,
+                "SeatCategory": sc,
+                "OPNO": opno,
+                "AllotCode": make_allot_code(g, t, crs, col, sc)
+            })
         elif current:
-            results.append(current)
-            occupied.add(roll)
+            results.append({
+                "RollNo": roll,
+                "LRank": C["LRank"],
+                "College": current["college"],
+                "Course": current["course"],
+                "SeatCategory": current["cat"],
+                "OPNO": current["opno"],
+                "AllotCode": make_allot_code(
+                    current["grp"], current["typ"],
+                    current["course"], current["college"], current["cat"]
+                )
+            })
 
-    # -----------------------------------------------------
+    # =====================================================
     # OUTPUT
-    # -----------------------------------------------------
-    result_df = pd.DataFrame(results)
+    # =====================================================
+    df = pd.DataFrame(results)
 
-    st.subheader("✅ LLM Allotment Result")
-    st.write(f"Total Seats        : {TOTAL_SEATS}")
-    st.write(f"Final Allotted     : {len(result_df)}")
-
-    st.dataframe(result_df)
+    st.success(f"✅ Phase {phase} completed")
+    st.write(f"Total Allotted: **{len(df)}**")
+    st.dataframe(df)
 
     buf = BytesIO()
-    result_df.to_csv(buf, index=False)
+    df.to_csv(buf, index=False)
     buf.seek(0)
 
     st.download_button(
-        "⬇ Download LLM Allotment",
+        "⬇ Download Allotment Result",
         buf,
-        "LLM_Allotment.csv",
+        f"LLM_Allotment_Phase{phase}.csv",
         "text/csv"
     )
