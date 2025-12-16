@@ -23,9 +23,6 @@ def decode_opt(opt):
     }
 
 def eligible_for_seat(seat_cat, cand_cat, special3):
-    seat_cat = seat_cat.upper()
-    cand_cat = cand_cat.upper()
-
     if seat_cat == "SM":
         return True
     if seat_cat == "PD":
@@ -44,7 +41,7 @@ def make_allot_code(g, t, c, col, cat):
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Greedy Allotment")
+    st.title("⚖️ LLM Counselling – Greedy Allotment (PD Enabled)")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -57,7 +54,7 @@ def llm_allotment():
         return
 
     # =====================================================
-    # LOAD FILES
+    # LOAD
     # =====================================================
     cand = read_any(cand_file)
     opts = read_any(opt_file)
@@ -65,7 +62,7 @@ def llm_allotment():
     prev  = read_any(prev_file) if prev_file else None
 
     # =====================================================
-    # CANDIDATES CLEANING
+    # CANDIDATES
     # =====================================================
     cand["Status"] = cand["Status"].astype(str).str.upper().str.strip() if "Status" in cand.columns else ""
     cand = cand[cand["Status"] != "S"]
@@ -82,7 +79,7 @@ def llm_allotment():
     cand = cand.sort_values("LRank")
 
     # =====================================================
-    # OPTIONS CLEANING
+    # OPTIONS
     # =====================================================
     opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int) if "RollNo" in opts.columns else 0
     opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int) if "OPNO" in opts.columns else 0
@@ -104,7 +101,7 @@ def llm_allotment():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
     # =====================================================
-    # SEAT MATRIX
+    # SEATS
     # =====================================================
     for c in ["grp", "typ", "college", "course", "category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
@@ -138,7 +135,7 @@ def llm_allotment():
         cand = cand[(cand["ConfirmFlag"] == "Y") | (cand["RollNo"].isin(protected))]
 
     # =====================================================
-    # ALLOTMENT (STRICT GREEDY)
+    # ALLOTMENT (PD → SM → CATEGORY)
     # =====================================================
     results = []
 
@@ -157,7 +154,24 @@ def llm_allotment():
 
             g, t, col, crs = dec["grp"], dec["typ"], dec["college"], dec["course"]
 
-            # ---- SM FIRST ----
+            # ---- 1️⃣ PD SEAT (only PD candidates) ----
+            if sp3 == "PD":
+                pd_key = (g, t, col, crs, "PD")
+                if seat_cap.get(pd_key, 0) > 0:
+                    seat_cap[pd_key] -= 1
+                    results.append({
+                        "RollNo": roll,
+                        "LRank": C["LRank"],
+                        "College": col,
+                        "Course": crs,
+                        "SeatCategory": "PD",
+                        "OPNO": op["OPNO"],
+                        "AllotCode": make_allot_code(g, t, crs, col, "PD")
+                    })
+                    allotted = True
+                    break
+
+            # ---- 2️⃣ SM SEAT (anyone) ----
             sm_key = (g, t, col, crs, "SM")
             if seat_cap.get(sm_key, 0) > 0:
                 seat_cap[sm_key] -= 1
@@ -173,7 +187,7 @@ def llm_allotment():
                 allotted = True
                 break
 
-            # ---- CATEGORY NEXT ----
+            # ---- 3️⃣ CATEGORY SEAT ----
             for (kg, kt, kcol, kcrs, sc), cap in seat_cap.items():
                 if cap <= 0:
                     continue
@@ -200,7 +214,7 @@ def llm_allotment():
             if allotted:
                 break
 
-        # ---- PROTECT CURRENT ----
+        # ---- PROTECT CURRENT ADMISSION ----
         if not allotted and roll in protected:
             cur = protected[roll]
             k = (cur["grp"], cur["typ"], cur["college"], cur["course"], cur["cat"])
@@ -223,18 +237,14 @@ def llm_allotment():
     # OUTPUT
     # =====================================================
     df = pd.DataFrame(results)
-    st.success(f"✅ Phase {phase} completed — Allotted {len(df)} seats")
+    st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted")
     st.dataframe(df)
 
     buf = BytesIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
-    st.download_button(
-        "⬇ Download Result",
-        buf,
-        f"LLM_Allotment_Phase{phase}.csv",
-        "text/csv"
-    )
+    st.download_button("⬇ Download Result", buf, f"LLM_Allotment_Phase{phase}.csv", "text/csv")
+
 
 # =====================================================
 # RUN
