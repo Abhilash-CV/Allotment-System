@@ -91,7 +91,7 @@ def llm_allotment():
     for col in ["Category", "Special3"]:
         cand[col] = cand.get(col, "").astype(str).str.upper().str.strip()
 
-    cand = cand.sort_values("LRank")  # IMPORTANT: strictly ascending LRank
+    cand = cand.sort_values("LRank")  # Strict LRank order
 
     # =====================================================
     # CLEAN OPTIONS
@@ -135,18 +135,14 @@ def llm_allotment():
         op_col   = f"OPNO_{phase-1}"
 
         for _, r in allot_prev.iterrows():
-
             if str(r.get("Status", "")).upper() == "S":
                 continue
-
             js = str(r.get(join_col, "")).upper()
             if js not in ("Y", ""):
                 continue
-
             code = str(r.get("Curr_Admn", "")).upper().strip()
             if len(code) < 9:
                 continue
-
             protected[int(r["RollNo"])] = {
                 "grp": code[0],
                 "typ": code[1],
@@ -161,19 +157,18 @@ def llm_allotment():
     # =====================================================
     if phase == 2:
         cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
-        # Keep only ConfirmFlag=Y or already protected
+        # Include only ConfirmFlag=Y or protected candidates
         cand = cand[
             (cand["ConfirmFlag"] == "Y") |
             (cand["RollNo"].isin(protected.keys()))
         ].copy()
 
     # =====================================================
-    # ALLOTMENT LOOP (GALE–SHAPLEY with strict LRank)
+    # ALLOTMENT LOOP (GALE–SHAPLEY)
     # =====================================================
     results = []
 
     for _, C in cand.iterrows():  # Strict LRank order
-
         roll = C["RollNo"]
         cat  = C["Category"]
         sp3  = C["Special3"]
@@ -181,35 +176,27 @@ def llm_allotment():
         current = protected.get(roll)
         best = None
 
-        # Try all options respecting current allotment (if any)
+        # ======== Try candidate options first ========
         for op in opts_by_roll.get(roll, []):
-
-            # Skip options worse than current (protected)
+            # Skip options worse than current protected seat
             if current and op["OPNO"] >= current["opno"]:
                 continue
-
             dec = decode_opt(op["Optn"])
             if not dec:
                 continue
-
             for (g, t, col, crs, sc), cap in seat_cap.items():
-
                 if cap <= 0:
                     continue
-
                 if (g, t, col, crs) != (dec["grp"], dec["typ"], dec["college"], dec["course"]):
                     continue
-
                 if not eligible_for_seat(sc, cat, sp3):
                     continue
-
                 best = (g, t, crs, col, sc, op["OPNO"])
                 break
-
             if best:
                 break
 
-        # ======== Allocate seat ========
+        # ======== Allocate new option ========
         if best:
             g, t, crs, col, sc, opno = best
             seat_cap[(g, t, col, crs, sc)] -= 1
@@ -223,7 +210,7 @@ def llm_allotment():
                 "AllotCode": make_allot_code(g, t, crs, col, sc)
             })
 
-        # If no new option, but protected candidate, allot current seat (if still available)
+        # ======== Allocate protected current seat if no better option ========
         elif current:
             key = (current["grp"], current["typ"], current["college"], current["course"], current["cat"])
             if seat_cap.get(key, 0) > 0:
