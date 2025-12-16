@@ -14,15 +14,6 @@ def read_any(f):
 
 
 def decode_opt(opt):
-    """
-    Option format (example):
-    L G COU COL CATCAT
-    index:
-      0   : grp
-      1   : typ
-      2-3 : course
-      4-6 : college
-    """
     opt = str(opt).upper().strip()
     if len(opt) < 7:
         return None
@@ -38,15 +29,12 @@ def eligible_for_seat(seat_cat, cand_cat, special3):
     seat_cat = seat_cat.upper()
     cand_cat = cand_cat.upper()
 
-    # PD seat
     if seat_cat == "PD":
         return special3 == "PD"
 
-    # SM seat → anyone
     if seat_cat == "SM":
         return True
 
-    # NA / NULL → SM only
     if cand_cat in ("NA", "", "NULL"):
         return False
 
@@ -74,7 +62,10 @@ def llm_allotment():
 
     allot_file = None
     if phase > 1:
-        allot_file = st.file_uploader("4️⃣ Allotment Details (Previous Phase)", type=["csv", "xlsx"])
+        allot_file = st.file_uploader(
+            "4️⃣ Allotment Details (Previous Phase)",
+            type=["csv", "xlsx"]
+        )
 
     if not cand_file or not opt_file or not seat_file:
         return
@@ -92,10 +83,8 @@ def llm_allotment():
     # CLEAN CANDIDATES
     # =====================================================
     cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
-    cand = cand[cand["Status"] != "S"].copy()   # 🚫 HARD EXCLUSION
-    if phase == 2:
-        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
-        cand = cand[cand["ConfirmFlag"] == "Y"].copy()
+    cand = cand[cand["Status"] != "S"].copy()   # HARD EXCLUSION
+
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
     cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
 
@@ -141,6 +130,7 @@ def llm_allotment():
     # PROTECTION (Phase ≥ 2)
     # =====================================================
     protected = {}
+
     if phase > 1 and allot_prev is not None:
 
         join_col = f"JoinStatus_{phase-1}"
@@ -165,8 +155,20 @@ def llm_allotment():
                 "course": code[2:4],
                 "college": code[4:7],
                 "cat": code[7:9],
-                "opno": int(r.get(op_col, 9999)) if str(r.get(op_col, "")).isdigit() else 9999
+                "opno": int(r.get(op_col, 9999))
+                if str(r.get(op_col, "")).isdigit() else 9999
             }
+
+    # =====================================================
+    # PHASE-2 CONFIRM FLAG + PROTECTION RULE
+    # =====================================================
+    if phase == 2:
+        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
+
+        cand = cand[
+            (cand["ConfirmFlag"] == "Y") |
+            (cand["RollNo"].isin(protected.keys()))
+        ].copy()
 
     # =====================================================
     # ALLOTMENT LOOP (GALE–SHAPLEY)
@@ -180,7 +182,6 @@ def llm_allotment():
         sp3  = C["Special3"]
 
         current = protected.get(roll)
-
         best = None
 
         for op in opts_by_roll.get(roll, []):
@@ -222,6 +223,7 @@ def llm_allotment():
                 "OPNO": opno,
                 "AllotCode": make_allot_code(g, t, crs, col, sc)
             })
+
         elif current:
             results.append({
                 "RollNo": roll,
