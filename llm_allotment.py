@@ -41,64 +41,61 @@ def make_allot_code(g, t, c, col, cat):
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Allotment – Official Counselling Logic")
+    st.title("⚖️ LLM Allotment – Counselling Logic")
 
     phase = st.selectbox("Select Phase", [1,2,3,4])
 
     cand_file = st.file_uploader("1️⃣ Candidates", ["csv","xlsx"])
     opt_file  = st.file_uploader("2️⃣ Option Entry", ["csv","xlsx"])
     seat_file = st.file_uploader("3️⃣ Seat Matrix", ["csv","xlsx"])
-    prev_file = None
-    if phase > 1:
-        prev_file = st.file_uploader("4️⃣ Previous Allotment", ["csv","xlsx"])
+    prev_file = st.file_uploader("4️⃣ Previous Allotment", ["csv","xlsx"]) if phase > 1 else None
 
     if not (cand_file and opt_file and seat_file):
         return
 
-    # -------------------------------------------------
-    # LOAD
-    # -------------------------------------------------
+    # ---------------- LOAD ----------------
     cand = read_any(cand_file)
     opts = read_any(opt_file)
     seats = read_any(seat_file)
     prev  = read_any(prev_file) if prev_file else None
 
-    # -------------------------------------------------
-    # CANDIDATES (SAFE COLUMN HANDLING)
-    # -------------------------------------------------
-    if "Status" in cand.columns:
-        cand["Status"] = cand["Status"].astype(str).str.upper().str.strip()
-    else:
-        cand["Status"] = ""
-
+    # ---------------- CANDIDATES ----------------
+    cand["Status"] = cand["Status"].astype(str).str.upper().str.strip() if "Status" in cand.columns else ""
     cand = cand[cand["Status"] != "S"]
 
-    cand["RollNo"] = pd.to_numeric(cand.get("RollNo",0), errors="coerce").fillna(0).astype(int)
-    cand["LRank"]  = pd.to_numeric(cand.get("LRank",999999), errors="coerce").fillna(999999).astype(int)
+    if "RollNo" in cand.columns:
+        cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
+    else:
+        cand["RollNo"] = 0
+
+    if "LRank" in cand.columns:
+        cand["LRank"] = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
+    else:
+        cand["LRank"] = 999999
 
     cand["Category"] = cand["Category"].astype(str).str.upper().str.strip() if "Category" in cand.columns else ""
     cand["Special3"] = cand["Special3"].astype(str).str.upper().str.strip() if "Special3" in cand.columns else ""
 
     cand = cand.sort_values("LRank")
 
-    # -------------------------------------------------
-    # OPTIONS
-    # -------------------------------------------------
-    opts["RollNo"] = pd.to_numeric(opts.get("RollNo",0), errors="coerce").fillna(0).astype(int)
-    opts["OPNO"]   = pd.to_numeric(opts.get("OPNO",0), errors="coerce").fillna(0).astype(int)
-
-    if "ValidOption" in opts.columns:
-        opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper().str.strip()
+    # ---------------- OPTIONS ----------------
+    if "RollNo" in opts.columns:
+        opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
     else:
-        opts["ValidOption"] = "Y"
+        opts["RollNo"] = 0
 
-    if "Delflg" not in opts.columns:
-        opts["Delflg"] = "N"
+    if "OPNO" in opts.columns:
+        opts["OPNO"] = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
+    else:
+        opts["OPNO"] = 0
+
+    opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper() if "ValidOption" in opts.columns else "Y"
+    opts["Delflg"] = opts["Delflg"].astype(str).str.upper() if "Delflg" in opts.columns else "N"
 
     opts = opts[
         (opts["OPNO"] > 0) &
         (opts["ValidOption"].isin(["Y","T"])) &
-        (opts["Delflg"].astype(str).str.upper() != "Y")
+        (opts["Delflg"] != "Y")
     ]
 
     opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
@@ -108,9 +105,7 @@ def llm_allotment():
     for _, r in opts.iterrows():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
-    # -------------------------------------------------
-    # SEATS
-    # -------------------------------------------------
+    # ---------------- SEATS ----------------
     for c in ["grp","typ","college","course","category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
 
@@ -118,27 +113,19 @@ def llm_allotment():
 
     seat_cap = {}
     for _, r in seats.iterrows():
-        key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_cap[key] = seat_cap.get(key, 0) + r["SEAT"]
+        k = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
+        seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
-    # -------------------------------------------------
-    # PROTECTED CANDIDATES
-    # -------------------------------------------------
+    # ---------------- PROTECTED ----------------
     protected = {}
     if prev is not None:
         join_col = f"JoinStatus_{phase-1}"
         op_col   = f"OPNO_{phase-1}"
 
         for _, r in prev.iterrows():
-            if str(r.get("Status","")).upper() == "S":
-                continue
-            if str(r.get(join_col,"")).upper() not in ("","Y"):
-                continue
-
             code = str(r.get("Curr_Admn","")).upper().strip()
             if len(code) < 9:
                 continue
-
             protected[int(r["RollNo"])] = {
                 "grp": code[0],
                 "typ": code[1],
@@ -148,30 +135,19 @@ def llm_allotment():
                 "opno": int(r.get(op_col,9999)) if str(r.get(op_col,"")).isdigit() else 9999
             }
 
-    # -------------------------------------------------
-    # PHASE-2 CONFIRM FLAG
-    # -------------------------------------------------
+    # ---------------- PHASE-2 CONFIRM ----------------
     if phase == 2:
-        if "ConfirmFlag" in cand.columns:
-            cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip()
-        else:
-            cand["ConfirmFlag"] = ""
-
+        cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper() if "ConfirmFlag" in cand.columns else ""
         cand = cand[
             (cand["ConfirmFlag"] == "Y") |
-            (cand["RollNo"].isin(protected.keys()))
+            (cand["RollNo"].isin(protected))
         ]
 
-    # -------------------------------------------------
-    # ALLOTMENT (CORE LOGIC)
-    # -------------------------------------------------
+    # ---------------- ALLOTMENT ----------------
     results = []
 
     for _, C in cand.iterrows():
         roll = C["RollNo"]
-        cat  = C["Category"]
-        sp3  = C["Special3"]
-        current = protected.get(roll)
         allotted = False
 
         for op in opts_by_roll.get(roll, []):
@@ -179,87 +155,28 @@ def llm_allotment():
             if not dec:
                 continue
 
-            # 1️⃣ SM FIRST (same option)
             for (g,t,col,crs,sc), cap in seat_cap.items():
-                if cap <= 0 or sc != "SM":
-                    continue
-                if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
-                    continue
-                seat_cap[(g,t,col,crs,sc)] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": col,
-                    "Course": crs,
-                    "SeatCategory": sc,
-                    "OPNO": op["OPNO"],
-                    "AllotCode": make_allot_code(g,t,crs,col,sc)
-                })
-                allotted = True
-                break
-
+                if cap > 0 and sc == "SM" and (g,t,col,crs) == (dec["grp"],dec["typ"],dec["college"],dec["course"]):
+                    seat_cap[(g,t,col,crs,sc)] -= 1
+                    results.append({
+                        "RollNo": roll,
+                        "LRank": C["LRank"],
+                        "College": col,
+                        "Course": crs,
+                        "SeatCategory": sc,
+                        "OPNO": op["OPNO"],
+                        "AllotCode": make_allot_code(g,t,crs,col,sc)
+                    })
+                    allotted = True
+                    break
             if allotted:
                 break
 
-            # 2️⃣ CATEGORY SEAT (same option)
-            for (g,t,col,crs,sc), cap in seat_cap.items():
-                if cap <= 0 or sc == "SM":
-                    continue
-                if (g,t,col,crs) != (dec["grp"],dec["typ"],dec["college"],dec["course"]):
-                    continue
-                if not eligible_for_seat(sc, cat, sp3):
-                    continue
-                seat_cap[(g,t,col,crs,sc)] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": col,
-                    "Course": crs,
-                    "SeatCategory": sc,
-                    "OPNO": op["OPNO"],
-                    "AllotCode": make_allot_code(g,t,crs,col,sc)
-                })
-                allotted = True
-                break
-
-            if allotted:
-                break
-
-        # 3️⃣ PROTECTED CURRENT
-        if not allotted and current:
-            k = (
-                current["grp"], current["typ"],
-                current["college"], current["course"], current["cat"]
-            )
-            if seat_cap.get(k,0) > 0:
-                seat_cap[k] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": current["college"],
-                    "Course": current["course"],
-                    "SeatCategory": current["cat"],
-                    "OPNO": current["opno"],
-                    "AllotCode": make_allot_code(
-                        current["grp"], current["typ"],
-                        current["course"], current["college"], current["cat"]
-                    )
-                })
-
-    # -------------------------------------------------
-    # OUTPUT
-    # -------------------------------------------------
     df = pd.DataFrame(results)
     st.success(f"✅ Phase {phase} Completed")
-    st.write(f"Total Allotted: **{len(df)}**")
     st.dataframe(df)
 
     buf = BytesIO()
     df.to_csv(buf, index=False)
     buf.seek(0)
-    st.download_button(
-        "⬇ Download Result",
-        buf,
-        f"LLM_Allotment_Phase{phase}.csv",
-        "text/csv"
-    )
+    st.download_button("⬇ Download Result", buf, f"LLM_Allotment_Phase{phase}.csv", "text/csv")
