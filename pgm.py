@@ -49,7 +49,7 @@ def eligible_for_seat(seat_cat, cand_cat, special3, cand_minority, is_minority_o
 # MAIN APP
 # =====================================================
 
-def llm_allotment():
+def pg_med_allotment():
 
     st.title("⚖️ PG Medical Counselling – Greedy Allotment")
 
@@ -286,4 +286,4 @@ def llm_allotment():
 # RUN
 # =====================================================
 
-llm_allotment()
+pg_med_allotment()
