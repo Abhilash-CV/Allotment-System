@@ -19,7 +19,7 @@ def decode_opt(opt):
     return opt[0], opt[1], opt[2:4], opt[4:7]
 
 # =====================================================
-# MAIN FUNCTION
+# MAIN
 # =====================================================
 
 def dnm_allotment():
@@ -30,7 +30,7 @@ def dnm_allotment():
 
     cand_file = st.file_uploader("1️⃣ Candidates", ["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix", ["csv", "xlsx"])
-    opt_file  = st.file_uploader("3️⃣ Options", ["csv", "xlsx"])
+    opt_file  = st.file_uploader("3️⃣ Option Entry", ["csv", "xlsx"])
     prev_file = st.file_uploader("4️⃣ Previous Allotment", ["csv", "xlsx"]) if phase > 1 else None
 
     if not (cand_file and seat_file and opt_file):
@@ -52,16 +52,15 @@ def dnm_allotment():
     cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"]
 
-    # ---- Rank normalization (STRICT) ----
+    # ---- STRICT rank normalisation ----
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
-            cand[r] = 9999999
+            cand[r] = -1
         else:
             cand[r] = (
                 pd.to_numeric(cand[r], errors="coerce")
-                .fillna(9999999)
+                .fillna(-1)
                 .astype(int)
-                .replace(0, 9999999)
             )
 
     # =====================================================
@@ -76,11 +75,11 @@ def dnm_allotment():
                 continue
 
             protected[int(r["RollNo"])] = (
-                code[0],       # grp
-                code[1],       # typ
-                code[4:7],     # college
-                code[2:4],     # course
-                code[7:9]      # category (HQ/MQ/IQ)
+                code[0],      # grp
+                code[1],      # typ
+                code[4:7],    # college
+                code[2:4],    # course
+                code[7:9]     # category (HQ/MQ/IQ)
             )
 
     # =====================================================
@@ -133,7 +132,7 @@ def dnm_allotment():
             seat_cap[k] -= 1
 
     # =====================================================
-    # ALLOTMENT ENGINE (STRICT QUOTA ELIGIBILITY)
+    # ALLOTMENT ENGINE (STRICT QUOTA RULE)
     # =====================================================
     rounds = [
         ("HQ", "HQ_Rank"),
@@ -150,8 +149,9 @@ def dnm_allotment():
             roll = C["RollNo"]
             rank_val = int(C[rank_col])
 
-            # 🚫 STRICT RULE
-            if rank_val >= 9999999:
+            # 🚫 CORE LOGIC (THIS WAS THE BUG)
+            # Candidate eligible ONLY if rank > 0 for that quota
+            if rank_val <= 0:
                 continue
 
             if roll in allotted:
