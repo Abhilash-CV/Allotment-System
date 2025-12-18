@@ -13,10 +13,7 @@ def read_any(file):
         return pd.read_csv(file, encoding="ISO-8859-1")
 
     if name.endswith(".xlsx") or name.endswith(".xls"):
-        try:
-            return pd.read_excel(file)
-        except:
-            return pd.read_csv(file, encoding="ISO-8859-1")
+        return pd.read_excel(file)
 
     return pd.read_csv(file, encoding="ISO-8859-1")
 
@@ -97,53 +94,29 @@ def dnm_allotment():
     cand_file = st.file_uploader("1️⃣ Candidates File", ["csv", "xlsx"])
     seat_file = st.file_uploader("2️⃣ Seat Matrix File", ["csv", "xlsx"])
     opt_file  = st.file_uploader("3️⃣ Option Entry File", ["csv", "xlsx"])
+    allotdet_file = st.file_uploader("4️⃣ Allotment Details File", ["csv", "xlsx"])
 
-    prev_allot_file = None
-    allotdet_file  = None
-
-    if phase != "PHASE1":
-        prev_allot_file = st.file_uploader(
-            "4️⃣ Previous Phase Allotment Result", ["csv", "xlsx"]
-        )
-        allotdet_file = st.file_uploader(
-            "5️⃣ Allotment Details File", ["csv", "xlsx"]
-        )
-
-    if not (cand_file and seat_file and opt_file):
-        return
-
-    if phase != "PHASE1" and not (prev_allot_file and allotdet_file):
-        st.warning("Previous allotment & allotmentdetails required")
+    if not (cand_file and seat_file and opt_file and allotdet_file):
         return
 
     # ---------------- LOAD FILES ----------------
     cand  = read_any(cand_file)
     seats = read_any(seat_file)
     opts  = read_any(opt_file)
+    allotdet = read_any(allotdet_file)
 
-    prev_allot = None
-    allotdet   = None
-
-    if prev_allot_file:
-        prev_allot = read_any(prev_allot_file)
-
-    if allotdet_file:
-        allotdet = read_any(allotdet_file)
-
-    # ---------------- NORMALIZE CANDIDATES ----------------
+    # ---------------- NORMALIZE ----------------
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").astype("Int64")
     cand["ARank"]  = pd.to_numeric(cand["ARank"], errors="coerce").fillna(9999999)
     cand["Category"] = cand.get("Category", "")
 
-    # Merge allotmentdetails
-    if allotdet is not None:
-        allotdet["RollNo"] = pd.to_numeric(
-            allotdet["RollNo"], errors="coerce"
-        ).astype("Int64")
+    allotdet["RollNo"] = pd.to_numeric(
+        allotdet["RollNo"], errors="coerce"
+    ).astype("Int64")
 
-        cand = cand.merge(allotdet, on="RollNo", how="left")
+    cand = cand.merge(allotdet, on="RollNo", how="left")
 
-    # ---------------- ELIGIBILITY FILTER ----------------
+    # ---------------- ELIGIBILITY ----------------
     cand = cand[cand.apply(
         lambda r: is_candidate_eligible(r, phase),
         axis=1
@@ -181,14 +154,13 @@ def dnm_allotment():
         key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
         seat_map[key] = seat_map.get(key, 0) + r["SEAT"]
 
-    # ---------------- REDUCE SEATS (PREVIOUS PHASE) ----------------
-    if prev_allot is not None and not prev_allot.empty:
-        for _, r in prev_allot.iterrows():
-            key = (
-                r["grp"], r["typ"],
-                r["College"], r["Course"],
-                r["SeatCategoryAllotted"]
-            )
+    # ---------------- REDUCE SEATS USING Curr_Admn ONLY ----------------
+    joined = cand[cand["Curr_Admn"].astype(str).str.strip().ne("")]
+
+    for _, r in joined.iterrows():
+        parts = str(r["Curr_Admn"]).split("|")
+        if len(parts) == 5:
+            key = tuple(p.upper().strip() for p in parts)
             if key in seat_map:
                 seat_map[key] = max(0, seat_map[key] - 1)
 
@@ -201,7 +173,7 @@ def dnm_allotment():
         arank = int(c["ARank"])
         ccat  = str(c["Category"]).upper().strip()
 
-        # Current admission seat (if any)
+        # current admission seat
         current_seat_key = None
         if str(c.get("Curr_Admn","")).strip():
             parts = str(c["Curr_Admn"]).split("|")
