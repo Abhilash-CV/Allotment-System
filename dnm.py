@@ -19,7 +19,7 @@ def decode_opt(opt):
     return opt[0], opt[1], opt[2:4], opt[4:7]
 
 # =====================================================
-# MAIN
+# MAIN FUNCTION
 # =====================================================
 
 def dnm_allotment():
@@ -45,14 +45,16 @@ def dnm_allotment():
     prev  = read_any(prev_file) if prev_file else None
 
     # =====================================================
-    # CANDIDATES
+    # BASIC CANDIDATE CLEAN
     # =====================================================
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
 
     cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"]
 
-    # ---- STRICT rank normalisation ----
+    # -----------------------------------------------------
+    # STRICT RANK NORMALISATION
+    # -----------------------------------------------------
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
             cand[r] = -1
@@ -71,7 +73,7 @@ def dnm_allotment():
     if prev is not None:
         for _, r in prev.iterrows():
             code = str(r.get("AllotCode", "")).upper().strip()
-            if len(code) < 7:
+            if len(code) < 9:
                 continue
 
             protected[int(r["RollNo"])] = (
@@ -79,18 +81,39 @@ def dnm_allotment():
                 code[1],      # typ
                 code[4:7],    # college
                 code[2:4],    # course
-                code[7:9]     # category (HQ/MQ/IQ)
+                code[7:9]     # quota (HQ/MQ/IQ)
             )
 
     # =====================================================
-    # PHASE-2+ FILTER
+    # PHASE-WISE ELIGIBILITY FILTER
     # =====================================================
     if phase > 1:
+
         cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
-        cand = cand[
-            (cand["ConfirmFlag"] == "Y") |
-            (cand["RollNo"].isin(protected))
-        ]
+
+        # --- Determine correct JoinStatus column ---
+        join_col = {
+            2: "JoinStatus_1",
+            3: "JoinStatus_2",
+            4: "JoinStatus_3"
+        }.get(phase)
+
+        if join_col:
+            cand[join_col] = cand.get(join_col, "").astype(str).str.upper().str.strip()
+
+            cand = cand[
+                (cand[join_col] != "N") &   # 🚫 HARD BLOCK
+                (
+                    (cand["ConfirmFlag"] == "Y") |
+                    (cand["RollNo"].isin(protected))
+                )
+            ]
+        else:
+            # fallback safety
+            cand = cand[
+                (cand["ConfirmFlag"] == "Y") |
+                (cand["RollNo"].isin(protected))
+            ]
 
     # =====================================================
     # OPTIONS
@@ -132,7 +155,7 @@ def dnm_allotment():
             seat_cap[k] -= 1
 
     # =====================================================
-    # ALLOTMENT ENGINE (STRICT QUOTA RULE)
+    # ALLOTMENT ENGINE (STRICT)
     # =====================================================
     rounds = [
         ("HQ", "HQ_Rank"),
@@ -149,8 +172,7 @@ def dnm_allotment():
             roll = C["RollNo"]
             rank_val = int(C[rank_col])
 
-            # 🚫 CORE LOGIC (THIS WAS THE BUG)
-            # Candidate eligible ONLY if rank > 0 for that quota
+            # 🚫 STRICT QUOTA ELIGIBILITY
             if rank_val <= 0:
                 continue
 
