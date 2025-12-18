@@ -19,7 +19,7 @@ def decode_opt(opt):
     return opt[0], opt[1], opt[2:4], opt[4:7]
 
 # =====================================================
-# MAIN
+# MAIN FUNCTION
 # =====================================================
 
 def dnm_allotment():
@@ -37,7 +37,7 @@ def dnm_allotment():
         return
 
     # =====================================================
-    # LOAD
+    # LOAD FILES
     # =====================================================
     cand  = read_any(cand_file)
     seats = read_any(seat_file)
@@ -49,15 +49,49 @@ def dnm_allotment():
     # =====================================================
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
 
-    cand["Status"] = cand.get("Status", "").astype(str).str.upper()
+    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"]
 
+    # ---- Rank normalization (STRICT) ----
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
-        cand[r] = pd.to_numeric(cand.get(r, 0), errors="coerce").fillna(9999999).astype(int)
+        if r not in cand.columns:
+            cand[r] = 9999999
+        else:
+            cand[r] = (
+                pd.to_numeric(cand[r], errors="coerce")
+                .fillna(9999999)
+                .astype(int)
+                .replace(0, 9999999)
+            )
 
+    # =====================================================
+    # PREVIOUS ALLOTMENT → PROTECTED
+    # =====================================================
+    protected = {}
+
+    if prev is not None:
+        for _, r in prev.iterrows():
+            code = str(r.get("AllotCode", "")).upper().strip()
+            if len(code) < 7:
+                continue
+
+            protected[int(r["RollNo"])] = (
+                code[0],       # grp
+                code[1],       # typ
+                code[4:7],     # college
+                code[2:4],     # course
+                code[7:9]      # category (HQ/MQ/IQ)
+            )
+
+    # =====================================================
+    # PHASE-2+ FILTER
+    # =====================================================
     if phase > 1:
-        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper()
-        cand = cand[cand["ConfirmFlag"] == "Y"]
+        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
+        cand = cand[
+            (cand["ConfirmFlag"] == "Y") |
+            (cand["RollNo"].isin(protected))
+        ]
 
     # =====================================================
     # OPTIONS
@@ -79,7 +113,7 @@ def dnm_allotment():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
     # =====================================================
-    # SEATS
+    # SEAT MATRIX
     # =====================================================
     for c in ["grp", "typ", "college", "course", "category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
@@ -92,23 +126,21 @@ def dnm_allotment():
         seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
     # =====================================================
-    # PROTECTED SEATS
+    # RESERVE PROTECTED SEATS FIRST
     # =====================================================
-    protected = {}
-
-    if prev is not None:
-        for _, r in prev.iterrows():
-            code = str(r.get("AllotCode", "")).upper()
-            if len(code) < 7:
-                continue
-            protected[int(r["RollNo"])] = (
-                code[0], code[1], code[4:7], code[2:4], code[7:9]
-            )
+    for roll, k in protected.items():
+        if seat_cap.get(k, 0) > 0:
+            seat_cap[k] -= 1
 
     # =====================================================
-    # ALLOTMENT ENGINE
+    # ALLOTMENT ENGINE (STRICT QUOTA ELIGIBILITY)
     # =====================================================
-    rounds = [("HQ", "HQ_Rank"), ("MQ", "MQ_Rank"), ("IQ", "IQ_Rank")]
+    rounds = [
+        ("HQ", "HQ_Rank"),
+        ("MQ", "MQ_Rank"),
+        ("IQ", "IQ_Rank"),
+    ]
+
     results = []
     allotted = set()
 
@@ -116,6 +148,12 @@ def dnm_allotment():
         for _, C in cand.sort_values(rank_col).iterrows():
 
             roll = C["RollNo"]
+            rank_val = int(C[rank_col])
+
+            # 🚫 STRICT RULE
+            if rank_val >= 9999999:
+                continue
+
             if roll in allotted:
                 continue
 
@@ -125,38 +163,26 @@ def dnm_allotment():
                     continue
 
                 g, t, crs, col = dec
-                key = (g, t, col, crs, quota)
+                seat_key = (g, t, col, crs, quota)
 
-                if seat_cap.get(key, 0) > 0:
-                    seat_cap[key] -= 1
+                if seat_cap.get(seat_key, 0) > 0:
+                    seat_cap[seat_key] -= 1
                     allotted.add(roll)
+
                     results.append({
                         "RollNo": roll,
                         "Quota": quota,
                         "College": col,
                         "Course": crs,
-                        "RankUsed": C[rank_col]
+                        "RankUsed": rank_val
                     })
                     break
-
-    # =====================================================
-    # PROTECT PREVIOUS
-    # =====================================================
-    for roll, k in protected.items():
-        if roll not in allotted and seat_cap.get(k, 0) > 0:
-            seat_cap[k] -= 1
-            results.append({
-                "RollNo": roll,
-                "Quota": "PROTECTED",
-                "College": k[2],
-                "Course": k[3],
-                "RankUsed": "-"
-            })
 
     # =====================================================
     # OUTPUT
     # =====================================================
     df = pd.DataFrame(results)
+
     st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted")
     st.dataframe(df, use_container_width=True)
 
