@@ -1,4 +1,4 @@
-# dnm_allotment.py
+# dnm.py
 import streamlit as st
 import pandas as pd
 from io import BytesIO
@@ -49,12 +49,13 @@ def dnm_allotment():
     # =====================================================
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
 
-    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
-    cand = cand[cand["Status"] != "S"]
+    if "Status" in cand.columns:
+        cand["Status"] = cand["Status"].astype(str).str.upper().str.strip()
+        cand = cand[cand["Status"] != "S"]
 
-    # -------------------------------
+    # -----------------------------------------------------
     # STRICT RANK NORMALISATION
-    # -------------------------------
+    # -----------------------------------------------------
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
             cand[r] = -1
@@ -83,11 +84,15 @@ def dnm_allotment():
     protected_retained = set(protected.keys())
 
     # =====================================================
-    # PHASE-WISE ELIGIBILITY FILTER
+    # PHASE-WISE ELIGIBILITY FILTER (SAFE)
     # =====================================================
     if phase > 1:
 
-        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
+        # ConfirmFlag (safe)
+        if "ConfirmFlag" not in cand.columns:
+            cand["ConfirmFlag"] = ""
+        else:
+            cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip()
 
         join_col = {
             2: "JoinStatus_1",
@@ -96,7 +101,10 @@ def dnm_allotment():
         }.get(phase)
 
         if join_col:
-            cand[join_col] = cand.get(join_col, "").astype(str).str.upper().str.strip()
+            if join_col not in cand.columns:
+                cand[join_col] = ""
+            else:
+                cand[join_col] = cand[join_col].astype(str).str.upper().str.strip()
 
             cand = cand[
                 (cand[join_col] != "N") &
@@ -112,8 +120,13 @@ def dnm_allotment():
     opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
     opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
 
-    opts["ValidOption"] = opts.get("ValidOption", "Y").astype(str).str.upper()
-    opts["Delflg"]      = opts.get("Delflg", "N").astype(str).str.upper()
+    if "ValidOption" not in opts.columns:
+        opts["ValidOption"] = "Y"
+    if "Delflg" not in opts.columns:
+        opts["Delflg"] = "N"
+
+    opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper()
+    opts["Delflg"]      = opts["Delflg"].astype(str).str.upper()
 
     opts = opts[
         (opts["OPNO"] > 0) &
@@ -156,7 +169,7 @@ def dnm_allotment():
             roll = C["RollNo"]
             rank_val = int(C[rank_col])
 
-            # STRICT QUOTA ELIGIBILITY
+            # STRICT quota eligibility
             if rank_val <= 0:
                 continue
 
@@ -186,7 +199,7 @@ def dnm_allotment():
                     break
 
     # =====================================================
-    # RETAIN PROTECTED CANDIDATES (NO SEAT LOSS)
+    # RETAIN PROTECTED CANDIDATES
     # =====================================================
     for roll in protected_retained:
         p = protected[roll]
