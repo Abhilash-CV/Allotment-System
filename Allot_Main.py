@@ -1,5 +1,5 @@
 import streamlit as st
-from dnm import allotments
+from dnm import dnm_allotment
 from pga_stray import pga_allotment
 from pgm import pg_med_allotment
 from bpharm_le import bpharm_le_allotment
