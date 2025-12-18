@@ -2,190 +2,204 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
+st.title("🎓 Admission Allotment – HQ / MQ / IQ")
+
+st.write("Upload the three files (CSV or XLSX): Candidates, Seat Matrix, Option Entry")
 
 # ----------------------------------------------------
-# UNIVERSAL FILE READER
+# UNIVERSAL FILE READER (NO openpyxl REQUIRED)
 # ----------------------------------------------------
 def read_any(file):
     name = file.name.lower()
 
+    # Case 1: CSV → direct read
     if name.endswith(".csv"):
         file.seek(0)
         return pd.read_csv(file, encoding="ISO-8859-1")
 
+    # Case 2: XLSX/XLS → use ODF engine (works on simple tables)
     if name.endswith(".xlsx") or name.endswith(".xls"):
         file.seek(0)
         try:
             xls = pd.ExcelFile(file, engine="odf")
-            return pd.read_excel(xls)
-        except:
+            df = pd.read_excel(xls)
+            return df
+        except Exception:
+            # Fallback: many Excel files exported from web systems are actually CSV internally
             file.seek(0)
             return pd.read_csv(file, encoding="ISO-8859-1")
 
+    # Unknown extension → fallback
     file.seek(0)
     return pd.read_csv(file, encoding="ISO-8859-1")
 
 
 # ----------------------------------------------------
-# CATEGORY ELIGIBILITY LOGIC
+# FILE UPLOADERS
 # ----------------------------------------------------
-def category_eligible(seat_cat, cand_cat):
-    seat_cat = str(seat_cat).strip().upper()
-    cand_cat = str(cand_cat or "").strip().upper()
-
-    if seat_cat in ["AM", "SM"]:
-        return True
-
-    if cand_cat in ["NA", "NULL", "", None, "N/A"]:
-        return False
-
-    return seat_cat == cand_cat
+cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv", "xlsx"])
+seat_file = st.file_uploader("2️⃣ Seat Matrix", type=["csv", "xlsx"])
+opt_file  = st.file_uploader("3️⃣ Option Entry", type=["csv", "xlsx"])
 
 
-# ----------------------------------------------------
-# DNM ALLOTMENT MAIN FUNCTION (CALLABLE)
-# ----------------------------------------------------
-def dnm_allotment():
+if cand_file and seat_file and opt_file:
 
-    st.title("🧮 DNM Admission Allotment")
-
-    cand_file = st.file_uploader("1️⃣ Candidates File", type=["csv","xlsx"])
-    seat_file = st.file_uploader("2️⃣ Seat Matrix", type=["csv","xlsx"])
-    opt_file  = st.file_uploader("3️⃣ Option Entry File", type=["csv","xlsx"])
-
-    if cand_file and seat_file and opt_file:
-
+    # ----------------------------------------------------
+    # LOAD FILES USING SAFE LOADER
+    # ----------------------------------------------------
+    try:
         cand = read_any(cand_file)
         seats = read_any(seat_file)
         opts = read_any(opt_file)
-        st.success("Files loaded successfully!")
+    except Exception as e:
+        st.error(f"File loading failed: {e}")
+        st.stop()
 
-        # ---------------- CLEAN SEATS ----------------
-        for col in ["grp","typ","college","course","category","SEAT"]:
-            if col not in seats.columns:
-                st.error(f"Seat file missing column: {col}")
-                st.stop()
+    st.success("Files uploaded successfully. Processing…")
 
-        for col in ["grp","typ","college","course","category"]:
-            seats[col] = seats[col].astype(str).str.upper().str.strip()
+    # ----------------------------------------------------
+    # CLEAN + NORMALIZE SEAT MATRIX
+    # ----------------------------------------------------
+    required_cols = ["grp", "typ", "college", "course", "category", "SEAT"]
+    for col in required_cols:
+        if col not in seats.columns:
+            st.error(f"Seat file missing column: {col}")
+            st.stop()
 
-        seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
+    for col in ["grp", "typ", "college", "course", "category"]:
+        seats[col] = seats[col].astype(str).str.strip().str.upper()
 
-        seat_map = {}
-        for _, r in seats.iterrows():
-            key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-            seat_map[key] = seat_map.get(key, 0) + r["SEAT"]
+    seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
-        # ---------------- CLEAN OPTIONS ----------------
-        opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper().str.strip()
-        opts["Delflg"] = opts["Delflg"].astype(str).str.upper().str.strip()
-        opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
+    # build seat availability map
+    seat_map = {}
+    for _, r in seats.iterrows():
+        key = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
+        seat_map[key] = seat_map.get(key, 0) + r["SEAT"]
 
-        opts = opts[(opts["OPNO"] != 0) &
-                    (opts["ValidOption"] == "Y") &
-                    (opts["Delflg"] != "Y")].copy()
+    # ----------------------------------------------------
+    # CLEAN OPTION ENTRIES
+    # ----------------------------------------------------
+    for col in ["RollNo", "OPNO", "Optn", "ValidOption", "Delflg"]:
+        if col not in opts.columns:
+            st.error(f"OptionEntry file missing column: {col}")
+            st.stop()
 
-        opts = opts.sort_values(["RollNo", "OPNO"])
-        opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").astype("Int64")
+    opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper().str.strip()
+    opts["Delflg"] = opts["Delflg"].astype(str).str.upper().str.strip()
+    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
 
-        # ---------------- CLEAN CANDIDATES ----------------
-        cand["ARank"] = pd.to_numeric(cand["ARank"], errors="coerce").fillna(9999999)
-        cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").astype("Int64")
+    opts = opts[
+        (opts["OPNO"] != 0) &
+        (opts["ValidOption"] == "Y") &
+        (opts["Delflg"] != "Y")
+    ].copy()
 
-        if "Category" not in cand.columns:
-            cand["Category"] = ""
+    opts = opts.sort_values(["RollNo", "OPNO"])
 
-        if "AIQ" not in cand.columns:
-            cand["AIQ"] = ""
+    # ----------------------------------------------------
+    # CLEAN RANKS
+    # ----------------------------------------------------
+    for col in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
+        if col not in cand.columns:
+            cand[col] = 0
 
-        cand_sorted = cand.sort_values("ARank")
+    for col in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
+        cand[col] = pd.to_numeric(cand[col], errors="coerce").fillna(0).astype(int)
+        cand[col] = cand[col].replace(0, 9999999)
 
-        # ---------------- OPTION DECODER ----------------
-        def decode_opt(opt):
-            opt = opt.strip().upper()
-            if len(opt) < 7:
-                return None
-            return opt[0], opt[1], opt[2:4], opt[4:7]
+    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").astype("Int64")
+    opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").astype("Int64")
 
-        # ---------------- RUN ALLOTMENT ----------------
-        allotments = []
+    # ----------------------------------------------------
+    # OPTN DECODER (MGADMCGG → M | G | AD | MCG)
+    # ----------------------------------------------------
+    def decode_opt(opt):
+        opt = opt.strip().upper()
+        if len(opt) < 7:
+            return None
+        grp = opt[0]
+        typ = opt[1]
+        course = opt[2:4]
+        college = opt[4:7]
+        return grp, typ, course, college
 
-        for _, c in cand_sorted.iterrows():
+    # ----------------------------------------------------
+    # RUN ALLOTMENT (HQ → MQ → IQ)
+    # ----------------------------------------------------
+    quota_rounds = [
+        ("HQ", "HQ_Rank"),
+        ("MQ", "MQ_Rank"),
+        ("IQ", "IQ_Rank"),
+    ]
+
+    allotments = []
+    already_allotted = set()
+
+    for quota_cat, rank_col in quota_rounds:
+        sorted_cand = cand.sort_values(rank_col)
+
+        for _, c in sorted_cand.iterrows():
             roll = int(c["RollNo"])
-            arank = int(c["ARank"])
-            ccat = str(c["Category"]).upper().strip()
+            rank_val = int(c[rank_col])
 
-            if str(c.get("AIQ","")).strip().upper() == "Y":
+            if rank_val == 9999999:
                 continue
 
+            if roll in already_allotted:
+                continue
+
+            # options for this candidate
             c_opts = opts[opts["RollNo"] == roll]
             if c_opts.empty:
                 continue
 
+            # try each option in order
             for _, op in c_opts.iterrows():
-
-                decoded = decode_opt(op["Optn"])
-                if not decoded:
+                dec = decode_opt(op["Optn"])
+                if not dec:
                     continue
 
-                og, otyp, ocourse, oclg = decoded
+                og, otyp, ocourse, oclg = dec
 
-                seat_rows = seats[
-                    (seats["grp"] == og) &
-                    (seats["typ"] == otyp) &
-                    (seats["college"] == oclg) &
-                    (seats["course"] == ocourse)
-                ]
+                key = (og, otyp, oclg, ocourse, quota_cat)
 
-                if seat_rows.empty:
-                    continue
+                if seat_map.get(key, 0) > 0:
+                    seat_map[key] -= 1
+                    already_allotted.add(roll)
 
-                chosen_key = None
-                chosen_cat = None
-
-                priority_order = ["AM", "SM"]
-                community_cats = sorted(set(seat_rows["category"]) - {"AM", "SM"})
-                priority_order += community_cats
-
-                for cat in priority_order:
-                    for _, sr in seat_rows[seat_rows["category"] == cat].iterrows():
-
-                        key = (sr["grp"], sr["typ"], sr["college"],
-                               sr["course"], sr["category"])
-
-                        if seat_map.get(key, 0) <= 0:
-                            continue
-
-                        if category_eligible(sr["category"], ccat):
-                            chosen_key = key
-                            chosen_cat = sr["category"]
-                            break
-
-                    if chosen_key:
-                        break
-
-                if chosen_key:
-                    seat_map[chosen_key] -= 1
                     allotments.append({
                         "RollNo": roll,
-                        "ARank": arank,
-                        "CandidateCategory": ccat,
+                        "Quota": quota_cat,
                         "grp": og,
                         "typ": otyp,
                         "College": oclg,
                         "Course": ocourse,
-                        "SeatCategoryAllotted": chosen_cat
+                        "RankUsed": rank_val
                     })
-                    break
 
-        result_df = pd.DataFrame(allotments)
-        st.subheader("🟩 Allotment Result")
-        st.write(f"Total Allotted: **{len(result_df)}**")
+                    break  # stop after first successful option
+
+    # ----------------------------------------------------
+    # RESULTS
+    # ----------------------------------------------------
+    result_df = pd.DataFrame(allotments)
+
+    st.subheader("🟩 Allotment Result")
+    st.write(f"Total Allotted: **{len(result_df)}**")
+
+    if not result_df.empty:
         st.dataframe(result_df)
 
-        buffer = BytesIO()
-        result_df.to_csv(buffer, index=False)
-        buffer.seek(0)
+        buf = BytesIO()
+        result_df.to_csv(buf, index=False)
+        buf.seek(0)
 
-        st.download_button("⬇️ Download Result CSV", buffer,
-                           "DNM_allotment_result.csv", "text/csv")
+        st.download_button(
+            "⬇️ Download Allotment Result CSV",
+            data=buf,
+            file_name="allotment_result.csv",
+            mime="text/csv"
+        )
+    else:
+        st.warning("No allotments. Check ranks, OPTN codes, seat categories, and matching rules.")
