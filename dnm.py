@@ -52,18 +52,14 @@ def dnm_allotment():
     cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"]
 
-    # -----------------------------------------------------
+    # -------------------------------
     # STRICT RANK NORMALISATION
-    # -----------------------------------------------------
+    # -------------------------------
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
             cand[r] = -1
         else:
-            cand[r] = (
-                pd.to_numeric(cand[r], errors="coerce")
-                .fillna(-1)
-                .astype(int)
-            )
+            cand[r] = pd.to_numeric(cand[r], errors="coerce").fillna(-1).astype(int)
 
     # =====================================================
     # PREVIOUS ALLOTMENT → PROTECTED
@@ -72,17 +68,19 @@ def dnm_allotment():
 
     if prev is not None:
         for _, r in prev.iterrows():
-            code = str(r.get("AllotCode", "")).upper().strip()
+            code = str(r.get("Curr_Admn", "")).upper().strip()
             if len(code) < 9:
                 continue
 
-            protected[int(r["RollNo"])] = (
-                code[0],      # grp
-                code[1],      # typ
-                code[4:7],    # college
-                code[2:4],    # course
-                code[7:9]     # quota (HQ/MQ/IQ)
-            )
+            protected[int(r["RollNo"])] = {
+                "grp": code[0],
+                "typ": code[1],
+                "course": code[2:4],
+                "college": code[4:7],
+                "quota": code[7:9]
+            }
+
+    protected_retained = set(protected.keys())
 
     # =====================================================
     # PHASE-WISE ELIGIBILITY FILTER
@@ -91,7 +89,6 @@ def dnm_allotment():
 
         cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
 
-        # --- Determine correct JoinStatus column ---
         join_col = {
             2: "JoinStatus_1",
             3: "JoinStatus_2",
@@ -102,17 +99,11 @@ def dnm_allotment():
             cand[join_col] = cand.get(join_col, "").astype(str).str.upper().str.strip()
 
             cand = cand[
-                (cand[join_col] != "N") &   # 🚫 HARD BLOCK
+                (cand[join_col] != "N") &
                 (
                     (cand["ConfirmFlag"] == "Y") |
                     (cand["RollNo"].isin(protected))
                 )
-            ]
-        else:
-            # fallback safety
-            cand = cand[
-                (cand["ConfirmFlag"] == "Y") |
-                (cand["RollNo"].isin(protected))
             ]
 
     # =====================================================
@@ -148,14 +139,7 @@ def dnm_allotment():
         seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
     # =====================================================
-    # RESERVE PROTECTED SEATS FIRST
-    # =====================================================
-    for roll, k in protected.items():
-        if seat_cap.get(k, 0) > 0:
-            seat_cap[k] -= 1
-
-    # =====================================================
-    # ALLOTMENT ENGINE (STRICT)
+    # ALLOTMENT ENGINE (STRICT + RETENTION)
     # =====================================================
     rounds = [
         ("HQ", "HQ_Rank"),
@@ -172,7 +156,7 @@ def dnm_allotment():
             roll = C["RollNo"]
             rank_val = int(C[rank_col])
 
-            # 🚫 STRICT QUOTA ELIGIBILITY
+            # STRICT QUOTA ELIGIBILITY
             if rank_val <= 0:
                 continue
 
@@ -190,6 +174,7 @@ def dnm_allotment():
                 if seat_cap.get(seat_key, 0) > 0:
                     seat_cap[seat_key] -= 1
                     allotted.add(roll)
+                    protected_retained.discard(roll)
 
                     results.append({
                         "RollNo": roll,
@@ -201,11 +186,24 @@ def dnm_allotment():
                     break
 
     # =====================================================
+    # RETAIN PROTECTED CANDIDATES (NO SEAT LOSS)
+    # =====================================================
+    for roll in protected_retained:
+        p = protected[roll]
+        results.append({
+            "RollNo": roll,
+            "Quota": p["quota"],
+            "College": p["college"],
+            "Course": p["course"],
+            "RankUsed": "RETAINED"
+        })
+
+    # =====================================================
     # OUTPUT
     # =====================================================
     df = pd.DataFrame(results)
 
-    st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted")
+    st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted / retained")
     st.dataframe(df, use_container_width=True)
 
     buf = BytesIO()
