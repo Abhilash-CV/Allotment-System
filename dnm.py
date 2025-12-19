@@ -63,31 +63,53 @@ def dnm_allotment():
             cand[r] = pd.to_numeric(cand[r], errors="coerce").fillna(-1).astype(int)
 
     # =====================================================
-    # BUILD BLOCK LIST FROM PREVIOUS ALLOTMENT (SOURCE OF TRUTH)
+    # BUILD BLOCKED + PROTECTED FROM PREVIOUS ALLOTMENT
+    # (SOURCE OF TRUTH)
     # =====================================================
     blocked = {}
+    protected = {}
+
     join_col = {
         2: "JoinStatus_1",
         3: "JoinStatus_2",
         4: "JoinStatus_3"
     }.get(phase)
 
-    if prev is not None and join_col and join_col in prev.columns:
+    if prev is not None:
         for _, r in prev.iterrows():
+
             roll = int(r.get("RollNo", 0))
-            js = str(r.get(join_col, "")).upper().strip()
+            js = ""
+
+            if join_col and join_col in prev.columns:
+                js = str(r.get(join_col, "")).upper().strip()
+
+            code = str(r.get("Curr_Admn", "")).upper().strip()
+
+            # 🚫 BLOCK: Non-joined candidates
             if js == "N":
                 blocked[roll] = f"{join_col} = N (Non-joined in previous phase)"
+                continue
+
+            # 🛡️ PROTECT: Joined candidates with current admission
+            if len(code) >= 9:
+                protected[roll] = {
+                    "grp": code[0],
+                    "typ": code[1],
+                    "course": code[2:4],
+                    "college": code[4:7],
+                    "quota": code[7:9]
+                }
+
+    protected_retained = set(protected.keys())
 
     # =====================================================
-    # REMOVE BLOCKED CANDIDATES FROM ELIGIBILITY
+    # REMOVE BLOCKED FROM ELIGIBILITY
     # =====================================================
     cand["BlockedReason"] = ""
-    cand.loc[cand["RollNo"].isin(blocked.keys()), "BlockedReason"] = (
-        cand["RollNo"].map(blocked)
-    )
+    cand.loc[cand["RollNo"].isin(blocked), "BlockedReason"] = cand["RollNo"].map(blocked)
 
-    eligible = cand[~cand["RollNo"].isin(blocked.keys())].copy()
+    eligible = cand[~cand["RollNo"].isin(blocked)].copy()
 
     # =====================================================
     # CONFIRM FLAG FILTER (PHASE > 1)
@@ -100,9 +122,7 @@ def dnm_allotment():
 
         eligible = eligible[
             (eligible["ConfirmFlag"] == "Y") |
-            (eligible["RollNo"].isin(
-                prev["RollNo"].unique() if prev is not None else []
-            ))
+            (eligible["RollNo"].isin(protected))
         ]
 
     # =====================================================
@@ -176,6 +196,7 @@ def dnm_allotment():
                 if seat_cap.get(seat_key, 0) > 0:
                     seat_cap[seat_key] -= 1
                     allotted.add(roll)
+                    protected_retained.discard(roll)
 
                     results.append({
                         "RollNo": roll,
@@ -188,7 +209,21 @@ def dnm_allotment():
                     break
 
     # =====================================================
-    # ADD BLOCKED CANDIDATES TO OUTPUT (AUDIT PURPOSE)
+    # RETAIN PROTECTED CANDIDATES
+    # =====================================================
+    for roll in protected_retained:
+        p = protected[roll]
+        results.append({
+            "RollNo": roll,
+            "Quota": p["quota"],
+            "College": p["college"],
+            "Course": p["course"],
+            "RankUsed": "RETAINED",
+            "BlockedReason": ""
+        })
+
+    # =====================================================
+    # ADD BLOCKED CANDIDATES (AUDIT)
     # =====================================================
     for roll, reason in blocked.items():
         results.append({
@@ -207,7 +242,7 @@ def dnm_allotment():
 
     st.success(
         f"✅ Phase {phase} completed — "
-        f"{len(df[df['BlockedReason'] == ''])} seats allotted, "
+        f"{len(df[df['BlockedReason'] == ''])} allotted/retained, "
         f"{len(blocked)} blocked"
     )
 
@@ -220,6 +255,6 @@ def dnm_allotment():
     st.download_button(
         "⬇ Download Result (with BlockedReason)",
         buf,
-        f"DNM_Allotment_Phase{phase}_WithBlockedReason.csv",
+        f"DNM_Allotment_Phase{phase}_FINAL.csv",
         "text/csv"
     )
