@@ -53,9 +53,9 @@ def dnm_allotment():
         cand["Status"] = cand["Status"].astype(str).str.upper().str.strip()
         cand = cand[cand["Status"] != "S"]
 
-    # =====================================================
+    # -----------------------------------------------------
     # STRICT RANK NORMALISATION
-    # =====================================================
+    # -----------------------------------------------------
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
             cand[r] = -1
@@ -63,68 +63,46 @@ def dnm_allotment():
             cand[r] = pd.to_numeric(cand[r], errors="coerce").fillna(-1).astype(int)
 
     # =====================================================
-    # DETERMINE JOINSTATUS COLUMN FOR THIS PHASE
+    # BUILD BLOCK LIST FROM PREVIOUS ALLOTMENT (SOURCE OF TRUTH)
     # =====================================================
+    blocked = {}
     join_col = {
         2: "JoinStatus_1",
         3: "JoinStatus_2",
         4: "JoinStatus_3"
     }.get(phase)
 
-    # =====================================================
-    # HARD EXCLUSION: NON-JOINED CANDIDATES (MANDATORY)
-    # =====================================================
-    if phase > 1 and join_col:
-        if join_col not in cand.columns:
-            cand[join_col] = ""
-        else:
-            cand[join_col] = cand[join_col].astype(str).str.upper().str.strip()
-
-        # 🚫 ABSOLUTE BLOCK
-        cand = cand[cand[join_col] != "N"]
-
-    # =====================================================
-    # PREVIOUS ALLOTMENT → PROTECTED (ONLY JOINED)
-    # =====================================================
-    protected = {}
-
-    if prev is not None:
+    if prev is not None and join_col and join_col in prev.columns:
         for _, r in prev.iterrows():
             roll = int(r.get("RollNo", 0))
-
-            # protect only if joined
-            if join_col and join_col in prev.columns:
-                js = str(r.get(join_col, "")).upper().strip()
-                if js == "N":
-                    continue
-
-            code = str(r.get("Curr_Admn", "")).upper().strip()
-            if len(code) < 9:
-                continue
-
-            protected[roll] = {
-                "grp": code[0],
-                "typ": code[1],
-                "course": code[2:4],
-                "college": code[4:7],
-                "quota": code[7:9]
-            }
-
-    protected_retained = set(protected.keys())
+            js = str(r.get(join_col, "")).upper().strip()
+            if js == "N":
+                blocked[roll] = f"{join_col} = N (Non-joined in previous phase)"
 
     # =====================================================
-    # PHASE-WISE CONFIRM FLAG FILTER
+    # REMOVE BLOCKED CANDIDATES FROM ELIGIBILITY
+    # =====================================================
+    cand["BlockedReason"] = ""
+    cand.loc[cand["RollNo"].isin(blocked.keys()), "BlockedReason"] = (
+        cand["RollNo"].map(blocked)
+    )
+
+    eligible = cand[~cand["RollNo"].isin(blocked.keys())].copy()
+
+    # =====================================================
+    # CONFIRM FLAG FILTER (PHASE > 1)
     # =====================================================
     if phase > 1:
-
-        if "ConfirmFlag" not in cand.columns:
-            cand["ConfirmFlag"] = ""
+        if "ConfirmFlag" not in eligible.columns:
+            eligible["ConfirmFlag"] = ""
         else:
-            cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip()
+            eligible["ConfirmFlag"] = eligible["ConfirmFlag"].astype(str).str.upper().str.strip()
 
-        cand = cand[
-            (cand["ConfirmFlag"] == "Y") |
-            (cand["RollNo"].isin(protected))
+        eligible = eligible[
+            (eligible["ConfirmFlag"] == "Y") |
+            (eligible["RollNo"].isin(
+                prev["RollNo"].unique() if prev is not None else []
+            ))
         ]
 
     # =====================================================
@@ -165,7 +143,7 @@ def dnm_allotment():
         seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
     # =====================================================
-    # ALLOTMENT ENGINE (STRICT)
+    # ALLOTMENT ENGINE (STRICT HQ / MQ / IQ)
     # =====================================================
     rounds = [
         ("HQ", "HQ_Rank"),
@@ -177,15 +155,13 @@ def dnm_allotment():
     allotted = set()
 
     for quota, rank_col in rounds:
-        for _, C in cand.sort_values(rank_col).iterrows():
+        for _, C in eligible.sort_values(rank_col).iterrows():
 
             roll = C["RollNo"]
             rank_val = int(C[rank_col])
 
-            # 🚫 STRICT QUOTA ELIGIBILITY
             if rank_val <= 0:
                 continue
-
             if roll in allotted:
                 continue
 
@@ -200,28 +176,28 @@ def dnm_allotment():
                 if seat_cap.get(seat_key, 0) > 0:
                     seat_cap[seat_key] -= 1
                     allotted.add(roll)
-                    protected_retained.discard(roll)
 
                     results.append({
                         "RollNo": roll,
                         "Quota": quota,
                         "College": col,
                         "Course": crs,
-                        "RankUsed": rank_val
+                        "RankUsed": rank_val,
+                        "BlockedReason": ""
                     })
                     break
 
     # =====================================================
-    # RETAIN PROTECTED CANDIDATES (JOINED ONLY)
+    # ADD BLOCKED CANDIDATES TO OUTPUT (AUDIT PURPOSE)
     # =====================================================
-    for roll in protected_retained:
-        p = protected[roll]
+    for roll, reason in blocked.items():
         results.append({
             "RollNo": roll,
-            "Quota": p["quota"],
-            "College": p["college"],
-            "Course": p["course"],
-            "RankUsed": "RETAINED"
+            "Quota": "",
+            "College": "",
+            "Course": "",
+            "RankUsed": "",
+            "BlockedReason": reason
         })
 
     # =====================================================
@@ -229,7 +205,12 @@ def dnm_allotment():
     # =====================================================
     df = pd.DataFrame(results)
 
-    st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted / retained")
+    st.success(
+        f"✅ Phase {phase} completed — "
+        f"{len(df[df['BlockedReason'] == ''])} seats allotted, "
+        f"{len(blocked)} blocked"
+    )
+
     st.dataframe(df, use_container_width=True)
 
     buf = BytesIO()
@@ -237,8 +218,8 @@ def dnm_allotment():
     buf.seek(0)
 
     st.download_button(
-        "⬇ Download Result",
+        "⬇ Download Result (with BlockedReason)",
         buf,
-        f"DNM_Allotment_Phase{phase}.csv",
+        f"DNM_Allotment_Phase{phase}_WithBlockedReason.csv",
         "text/csv"
     )
