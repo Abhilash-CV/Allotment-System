@@ -53,9 +53,9 @@ def dnm_allotment():
         cand["Status"] = cand["Status"].astype(str).str.upper().str.strip()
         cand = cand[cand["Status"] != "S"]
 
-    # -------------------------------
+    # =====================================================
     # STRICT RANK NORMALISATION
-    # -------------------------------
+    # =====================================================
     for r in ["HQ_Rank", "MQ_Rank", "IQ_Rank"]:
         if r not in cand.columns:
             cand[r] = -1
@@ -63,7 +63,7 @@ def dnm_allotment():
             cand[r] = pd.to_numeric(cand[r], errors="coerce").fillna(-1).astype(int)
 
     # =====================================================
-    # PHASE-WISE JOINSTATUS COLUMN
+    # DETERMINE JOINSTATUS COLUMN FOR THIS PHASE
     # =====================================================
     join_col = {
         2: "JoinStatus_1",
@@ -72,17 +72,27 @@ def dnm_allotment():
     }.get(phase)
 
     # =====================================================
-    # BUILD PROTECTED (STRICT — JOINSTATUS BLOCKED)
+    # HARD EXCLUSION: NON-JOINED CANDIDATES (MANDATORY)
+    # =====================================================
+    if phase > 1 and join_col:
+        if join_col not in cand.columns:
+            cand[join_col] = ""
+        else:
+            cand[join_col] = cand[join_col].astype(str).str.upper().str.strip()
+
+        # 🚫 ABSOLUTE BLOCK
+        cand = cand[cand[join_col] != "N"]
+
+    # =====================================================
+    # PREVIOUS ALLOTMENT → PROTECTED (ONLY JOINED)
     # =====================================================
     protected = {}
 
     if prev is not None:
-
         for _, r in prev.iterrows():
-
             roll = int(r.get("RollNo", 0))
 
-            # 🚫 NEVER protect if JoinStatus = N
+            # protect only if joined
             if join_col and join_col in prev.columns:
                 js = str(r.get(join_col, "")).upper().strip()
                 if js == "N":
@@ -103,7 +113,7 @@ def dnm_allotment():
     protected_retained = set(protected.keys())
 
     # =====================================================
-    # PHASE-WISE ELIGIBILITY FILTER
+    # PHASE-WISE CONFIRM FLAG FILTER
     # =====================================================
     if phase > 1:
 
@@ -112,19 +122,10 @@ def dnm_allotment():
         else:
             cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip()
 
-        if join_col:
-            if join_col not in cand.columns:
-                cand[join_col] = ""
-            else:
-                cand[join_col] = cand[join_col].astype(str).str.upper().str.strip()
-
-            cand = cand[
-                (cand[join_col] != "N") &
-                (
-                    (cand["ConfirmFlag"] == "Y") |
-                    (cand["RollNo"].isin(protected))
-                )
-            ]
+        cand = cand[
+            (cand["ConfirmFlag"] == "Y") |
+            (cand["RollNo"].isin(protected))
+        ]
 
     # =====================================================
     # OPTIONS
@@ -164,7 +165,7 @@ def dnm_allotment():
         seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
     # =====================================================
-    # ALLOTMENT ENGINE (STRICT + RETENTION)
+    # ALLOTMENT ENGINE (STRICT)
     # =====================================================
     rounds = [
         ("HQ", "HQ_Rank"),
@@ -211,7 +212,7 @@ def dnm_allotment():
                     break
 
     # =====================================================
-    # RETAIN PROTECTED CANDIDATES (NO SEAT LOSS)
+    # RETAIN PROTECTED CANDIDATES (JOINED ONLY)
     # =====================================================
     for roll in protected_retained:
         p = protected[roll]
