@@ -216,92 +216,92 @@ def llm_allotment():
     # =====================================================
 
     conversion_log = []
-
-    # =====================================================
-# PASS 2 – VACANCY-DRIVEN CONVERSION (SEAT-FIRST, CORRECT)
-# =====================================================
-
-if phase >= 3:
-
-    # Unallotted candidates in rank order
-    pending = cand[
-        (~cand["RollNo"].isin(allotted)) &
-        (cand["RollNo"].isin(opts_by_roll))
-    ]
-
-    # Iterate per college+course (seat-first)
-    for base, cats in seat_cap.items():
-
-        # For each original seat category
-        for seat_cat, vacant in list(cats.items()):
-
-            if vacant <= 0:
-                continue
-
-            conv_chain = CONVERSION_MAP.get(seat_cat, [])
-
-            if not conv_chain:
-                continue  # EW or non-convertible
-
-            # Try conversion categories IN ORDER
-            for target_cat in conv_chain:
-
-                # Eligible candidates IN RANK ORDER
-                for _, C in pending.iterrows():
-
-                    if cats[seat_cat] <= 0:
-                        break
-
-                    roll = C["RollNo"]
-
-                    # Candidate must have option for this base
-                    valid_opt = None
-                    for op in opts_by_roll[roll]:
-                        dec = decode_opt(op["Optn"])
-                        if not dec:
+    if phase >= 3:
+    
+        # Unallotted candidates with options
+        pending = cand[
+            (~cand["RollNo"].isin(allotted)) &
+            (cand["RollNo"].isin(opts_by_roll))
+        ]
+    
+        # Iterate seats FIRST
+        for base, cats in seat_cap.items():
+    
+            for seat_cat, vacant in list(cats.items()):
+    
+                if vacant <= 0:
+                    continue
+    
+                conv_chain = [seat_cat] + CONVERSION_MAP.get(seat_cat, [])
+                if seat_cat == "EW":
+                    continue
+    
+                # Try each conversion category ONLY after exhaustion
+                for target_cat in conv_chain:
+    
+                    # Find eligible candidates for THIS category
+                    elig = []
+    
+                    for _, C in pending.iterrows():
+    
+                        roll = C["RollNo"]
+    
+                        # must have option for this base
+                        valid_opt = None
+                        for op in opts_by_roll[roll]:
+                            dec = decode_opt(op["Optn"])
+                            if dec and (
+                                dec["grp"], dec["typ"],
+                                dec["college"], dec["course"]
+                            ) == base:
+                                valid_opt = op
+                                break
+    
+                        if not valid_opt:
                             continue
-                        if (
-                            dec["grp"], dec["typ"],
-                            dec["college"], dec["course"]
-                        ) == base:
-                            valid_opt = op
+    
+                        if eligible(
+                            target_cat,
+                            C["Category"],
+                            C["Special3"],
+                            C["Others"]
+                        ):
+                            elig.append((C, valid_opt))
+    
+                    # 🔑 EXHAUSTION RULE
+                    if not elig:
+                        continue   # try next category ONLY if none exist
+    
+                    # Allot seats to this category
+                    for C, op in elig:
+    
+                        if cats[seat_cat] <= 0:
                             break
-
-                    if not valid_opt:
-                        continue
-
-                    if not eligible(
-                        target_cat,
-                        C["Category"],
-                        C["Special3"],
-                        C["Others"]
-                    ):
-                        continue
-
-                    # ---- ASSERTIONS ----
-                    assert seat_cat != "EW", "❌ EW seat converted"
-                    assert cats[seat_cat] > 0, "❌ Negative seat usage"
-
-                    # Allot
-                    cats[seat_cat] -= 1
-                    allotted.add(roll)
-
-                    results.append({
-                        "RollNo": roll,
-                        "LRank": C["LRank"],
-                        "College": base[2],
-                        "Course": base[3],
-                        "SeatCategory": target_cat,
-                        "OPNO": valid_opt["OPNO"],
-                        "AllotCode": make_allot_code(
-                            base[0], base[1],
-                            base[3], base[2],
-                            target_cat
-                        )
-                    })
-
-                # Update pending list
-                pending = pending[~pending["RollNo"].isin(allotted)]
+    
+                        roll = C["RollNo"]
+    
+                        cats[seat_cat] -= 1
+                        allotted.add(roll)
+    
+                        results.append({
+                            "RollNo": roll,
+                            "LRank": C["LRank"],
+                            "College": base[2],
+                            "Course": base[3],
+                            "SeatCategory": target_cat,
+                            "OPNO": op["OPNO"],
+                            "AllotCode": make_allot_code(
+                                base[0], base[1],
+                                base[3], base[2],
+                                target_cat
+                            )
+                        })
+    
+                    # refresh pending after allotment
+                    pending = pending[~pending["RollNo"].isin(allotted)]
+    
+                    # move to next seat category
+                    break
 
     # =====================================================
     # AUDIT SNAPSHOT – AFTER CONVERSION
