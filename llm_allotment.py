@@ -27,7 +27,7 @@ def make_allot_code(g, t, c, col, cat):
     return f"{g}{t}{c}{col}{c2}{c2}"
 
 # =====================================================
-# CONVERSION RULES (PHASE >= 3)
+# SEAT CONVERSION (PHASE >= 3)
 # =====================================================
 
 def get_conversion_chain(seat_cat):
@@ -40,7 +40,7 @@ def get_conversion_chain(seat_cat):
     if seat_cat in ("MU", "EZ", "BH", "BX", "KN", "KU", "VK", "DV"):
         return ["SM"]
     if seat_cat == "EW":
-        return ["EW"]      # NO conversion
+        return ["EW"]      # strictly no conversion
     return [seat_cat, "SM"]
 
 def eligible_with_conversion(seat_cat, cand_cat, special3, others):
@@ -58,7 +58,7 @@ def eligible_with_conversion(seat_cat, cand_cat, special3, others):
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Greedy Allotment with Seat Conversion")
+    st.title("⚖️ LLM Counselling – Greedy Allotment (Phase-Aware)")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -71,11 +71,11 @@ def llm_allotment():
         return
 
     # =====================================================
-    # LOAD DATA
+    # LOAD
     # =====================================================
 
-    cand = read_any(cand_file)
-    opts = read_any(opt_file)
+    cand  = read_any(cand_file)
+    opts  = read_any(opt_file)
     seats = read_any(seat_file)
     prev  = read_any(prev_file) if prev_file else None
 
@@ -83,18 +83,18 @@ def llm_allotment():
     # CANDIDATES
     # =====================================================
 
-    cand["Status"] = cand["Status"].astype(str).str.upper().str.strip() if "Status" in cand.columns else ""
+    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
     cand = cand[cand["Status"] != "S"]
 
     cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
     cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
 
-    cand["Category"] = cand["Category"].astype(str).str.upper().str.strip() if "Category" in cand.columns else ""
-    cand["Special3"] = cand["Special3"].astype(str).str.upper().str.strip() if "Special3" in cand.columns else ""
-    cand["Others"]   = cand["Others"].astype(str).str.upper().str.strip() if "Others" in cand.columns else ""
+    cand["Category"] = cand.get("Category", "").astype(str).str.upper().str.strip()
+    cand["Special3"] = cand.get("Special3", "").astype(str).str.upper().str.strip()
+    cand["Others"]   = cand.get("Others", "").astype(str).str.upper().str.strip()
 
     if phase == 2:
-        cand["ConfirmFlag"] = cand["ConfirmFlag"].astype(str).str.upper().str.strip() if "ConfirmFlag" in cand.columns else ""
+        cand["ConfirmFlag"] = cand.get("ConfirmFlag", "").astype(str).str.upper().str.strip()
 
     cand = cand.sort_values("LRank")
 
@@ -105,8 +105,8 @@ def llm_allotment():
     opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
     opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
 
-    opts["ValidOption"] = opts["ValidOption"].astype(str).str.upper() if "ValidOption" in opts.columns else "Y"
-    opts["Delflg"]      = opts["Delflg"].astype(str).str.upper() if "Delflg" in opts.columns else "N"
+    opts["ValidOption"] = opts.get("ValidOption", "Y").astype(str).str.upper()
+    opts["Delflg"]      = opts.get("Delflg", "N").astype(str).str.upper()
 
     opts = opts[
         (opts["OPNO"] > 0) &
@@ -122,8 +122,32 @@ def llm_allotment():
         opts_by_roll.setdefault(r["RollNo"], []).append(r)
 
     # =====================================================
-    # SEATS
+    # SEATS (SAFE NORMALIZATION)
     # =====================================================
+
+    seats.columns = (
+        seats.columns
+             .str.strip()
+             .str.upper()
+             .str.replace(" ", "")
+    )
+
+    COL_MAP = {
+        "GRP": "grp", "GROUP": "grp",
+        "TYPE": "typ",
+        "COLLEGECODE": "college", "COLLEGE": "college",
+        "COURSECODE": "course", "COURSE": "course",
+        "CATEGORY": "category",
+        "SEAT": "SEAT", "SEATS": "SEAT"
+    }
+
+    seats = seats.rename(columns={k: v for k, v in COL_MAP.items() if k in seats.columns})
+
+    required = {"grp", "typ", "college", "course", "category", "SEAT"}
+    missing = required - set(seats.columns)
+    if missing:
+        st.error(f"❌ Seat Matrix missing columns: {', '.join(missing)}")
+        st.stop()
 
     for c in ["grp", "typ", "college", "course", "category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
@@ -136,11 +160,11 @@ def llm_allotment():
         seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
 
     # =====================================================
-    # PROTECTED CURRENT ADMISSION
+    # PROTECTED ADMISSION (ONLY UPTO PHASE 2)
     # =====================================================
 
     protected = {}
-    if prev is not None:
+    if phase <= 2 and prev is not None:
         for _, r in prev.iterrows():
             code = str(r.get("Curr_Admn", "")).upper().strip()
             if len(code) < 9:
@@ -151,7 +175,7 @@ def llm_allotment():
                 "course": code[2:4],
                 "college": code[4:7],
                 "cat": code[7:9],
-                "opno": int(r.get(f"OPNO_{phase-1}", 9999)) if str(r.get(f"OPNO_{phase-1}", "")).isdigit() else 9999
+                "opno": int(r.get(f"OPNO_{phase-1}", 9999))
             }
 
     if phase == 2:
@@ -166,9 +190,14 @@ def llm_allotment():
     for _, C in cand.iterrows():
 
         roll = C["RollNo"]
-        cat  = C["Category"]
-        sp3  = C["Special3"]
-        oth  = C["Others"]
+
+        # 🚫 Phase ≥3 → no options → no allotment
+        if phase >= 3 and roll not in opts_by_roll:
+            continue
+
+        cat = C["Category"]
+        sp3 = C["Special3"]
+        oth = C["Others"]
 
         allotted = False
 
@@ -180,7 +209,7 @@ def llm_allotment():
 
             g, t, col, crs = dec["grp"], dec["typ"], dec["college"], dec["course"]
 
-            # ---- PD priority (all phases) ----
+            # ---- PD PRIORITY ----
             if sp3 == "PD":
                 k = (g, t, col, crs, "PD")
                 if seat_cap.get(k, 0) > 0:
@@ -247,8 +276,8 @@ def llm_allotment():
             if allotted:
                 break
 
-        # ---- PROTECT CURRENT ADMISSION ----
-        if not allotted and roll in protected:
+        # ---- PROTECTED ADMISSION (ONLY PHASE 1–2) ----
+        if phase <= 2 and not allotted and roll in protected:
             cur = protected[roll]
             k = (cur["grp"], cur["typ"], cur["college"], cur["course"], cur["cat"])
             if seat_cap.get(k, 0) > 0:
