@@ -38,7 +38,7 @@ CONVERSION_MAP = {
     "MU": ["SM"], "EZ": ["SM"], "BH": ["SM"],
     "BX": ["SM"], "KN": ["SM"], "KU": ["SM"],
     "VK": ["SM"], "DV": ["SM"],
-    "EW": []   # no conversion
+    "EW": []   # never convert
 }
 
 # =====================================================
@@ -47,7 +47,7 @@ CONVERSION_MAP = {
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Seat-Driven Conversion (Final)")
+    st.title("⚖️ LLM Counselling – Final Seat Conversion Logic")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -92,7 +92,7 @@ def llm_allotment():
             opts_by_roll[r["RollNo"]].append(r)
 
     # =====================================================
-    # SEATS – ROBUST NORMALIZATION (FIXED)
+    # SEATS – ROBUST NORMALIZATION
     # =====================================================
 
     seats.columns = (
@@ -174,7 +174,7 @@ def llm_allotment():
                 })
                 break
 
-            # SM (open)
+            # SM
             if seat_cap[base]["SM"] > 0:
                 seat_cap[base]["SM"] -= 1
                 allotted.add(roll)
@@ -187,12 +187,28 @@ def llm_allotment():
                 break
 
     # =====================================================
-    # PASS 2 – VACANCY CONVERSION (SEAT-FIRST, EXHAUSTION-AWARE)
+    # PASS 2 – VACANCY CONVERSION (FINAL RULE)
     # =====================================================
 
     if phase >= 3:
 
-        # Build candidate pools per base + category
+        # -------------------------------------------------
+        # Bases that still have demand (ANY unallotted opt)
+        # -------------------------------------------------
+        base_has_demand = set()
+
+        for roll, oplist in opts_by_roll.items():
+            if roll in allotted:
+                continue
+            for op in oplist:
+                dec = decode_opt(op["Optn"])
+                if not dec:
+                    continue
+                base_has_demand.add(
+                    (dec["grp"], dec["typ"], dec["college"], dec["course"])
+                )
+
+        # Candidate pools per base + category
         cand_pool = defaultdict(lambda: defaultdict(list))
 
         for _, C in cand.iterrows():
@@ -216,6 +232,10 @@ def llm_allotment():
         # Seat-driven conversion
         for base, cats in seat_cap.items():
 
+            # 🔑 FINAL RULE: convert only if NO demand exists
+            if base in base_has_demand:
+                continue
+
             for seat_cat, vacant in list(cats.items()):
                 if vacant <= 0 or seat_cat == "EW":
                     continue
@@ -226,7 +246,7 @@ def llm_allotment():
 
                     pool = cand_pool[base].get(target_cat, [])
                     if not pool:
-                        continue  # exhaustion gate
+                        continue
 
                     for C, op in pool:
                         if cats[seat_cat] <= 0:
