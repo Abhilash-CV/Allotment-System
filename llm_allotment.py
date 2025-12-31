@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from io import BytesIO
+from collections import defaultdict
 
 # =====================================================
 # HELPERS
@@ -27,23 +28,20 @@ def make_allot_code(g, t, c, col, cat):
     return f"{g}{t}{c}{col}{c2}{c2}"
 
 # =====================================================
-# SEAT CONVERSION (PHASE >= 3)
+# CONVERSION POLICY (PHASE >= 3)
 # =====================================================
 
-def get_conversion_chain(seat_cat):
-    if seat_cat == "SC":
-        return ["SC", "ST", "OE", "SM"]
-    if seat_cat == "ST":
-        return ["ST", "SC", "OE", "SM"]
-    if seat_cat == "PD":
-        return ["PD", "SM"]
-    if seat_cat in ("MU", "EZ", "BH", "BX", "KN", "KU", "VK", "DV"):
-        return ["SM"]
-    if seat_cat == "EW":
-        return ["EW"]      # strictly no conversion
-    return [seat_cat, "SM"]
+CONVERSION_MAP = {
+    "SC": ["ST", "OE", "SM"],
+    "ST": ["SC", "OE", "SM"],
+    "PD": ["SM"],
+    "MU": ["SM"], "EZ": ["SM"], "BH": ["SM"],
+    "BX": ["SM"], "KN": ["SM"], "KU": ["SM"],
+    "VK": ["SM"], "DV": ["SM"],
+    "EW": []   # strictly no conversion
+}
 
-def eligible_with_conversion(seat_cat, cand_cat, special3, others):
+def eligible(seat_cat, cand_cat, special3, others):
     if seat_cat == "SM":
         return True
     if seat_cat == "PD":
@@ -58,7 +56,7 @@ def eligible_with_conversion(seat_cat, cand_cat, special3, others):
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Greedy Allotment (Phase-Aware)")
+    st.title("⚖️ LLM Counselling – Phase-Aware Allotment with Audit")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -83,12 +81,10 @@ def llm_allotment():
     # CANDIDATES
     # =====================================================
 
-    cand["Status"] = cand.get("Status", "").astype(str).str.upper().str.strip()
-    cand = cand[cand["Status"] != "S"]
-
-    cand["RollNo"] = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
-    cand["LRank"]  = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
-
+    cand["Status"]   = cand.get("Status", "").astype(str).str.upper().str.strip()
+    cand             = cand[cand["Status"] != "S"]
+    cand["RollNo"]   = pd.to_numeric(cand["RollNo"], errors="coerce").fillna(0).astype(int)
+    cand["LRank"]    = pd.to_numeric(cand["LRank"], errors="coerce").fillna(999999).astype(int)
     cand["Category"] = cand.get("Category", "").astype(str).str.upper().str.strip()
     cand["Special3"] = cand.get("Special3", "").astype(str).str.upper().str.strip()
     cand["Others"]   = cand.get("Others", "").astype(str).str.upper().str.strip()
@@ -104,44 +100,26 @@ def llm_allotment():
 
     opts["RollNo"] = pd.to_numeric(opts["RollNo"], errors="coerce").fillna(0).astype(int)
     opts["OPNO"]   = pd.to_numeric(opts["OPNO"], errors="coerce").fillna(0).astype(int)
-
-    opts["ValidOption"] = opts.get("ValidOption", "Y").astype(str).str.upper()
-    opts["Delflg"]      = opts.get("Delflg", "N").astype(str).str.upper()
-
-    opts = opts[
-        (opts["OPNO"] > 0) &
-        (opts["ValidOption"].isin(["Y", "T"])) &
-        (opts["Delflg"] != "Y")
-    ]
-
-    opts["Optn"] = opts["Optn"].astype(str).str.upper().str.strip()
+    opts["Optn"]   = opts["Optn"].astype(str).str.upper().str.strip()
     opts = opts.sort_values(["RollNo", "OPNO"])
 
-    opts_by_roll = {}
+    opts_by_roll = defaultdict(list)
     for _, r in opts.iterrows():
-        opts_by_roll.setdefault(r["RollNo"], []).append(r)
+        opts_by_roll[r["RollNo"]].append(r)
 
     # =====================================================
-    # SEATS (SAFE NORMALIZATION)
+    # SEATS – NORMALIZE & INDEX (PERFORMANCE)
     # =====================================================
 
-    seats.columns = (
-        seats.columns
-             .str.strip()
-             .str.upper()
-             .str.replace(" ", "")
-    )
-
-    COL_MAP = {
-        "GRP": "grp", "GROUP": "grp",
+    seats.columns = seats.columns.str.strip().str.upper().str.replace(" ", "")
+    seats = seats.rename(columns={
+        "GROUP": "grp", "GRP": "grp",
         "TYPE": "typ",
-        "COLLEGECODE": "college", "COLLEGE": "college",
-        "COURSECODE": "course", "COURSE": "course",
+        "COLLEGECODE": "college",
+        "COURSECODE": "course",
         "CATEGORY": "category",
-        "SEAT": "SEAT", "SEATS": "SEAT"
-    }
-
-    seats = seats.rename(columns={k: v for k, v in COL_MAP.items() if k in seats.columns})
+        "SEAT": "SEAT"
+    })
 
     required = {"grp", "typ", "college", "course", "category", "SEAT"}
     missing = required - set(seats.columns)
@@ -154,164 +132,184 @@ def llm_allotment():
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
-    seat_cap = {}
+    # ---- seat_cap indexed by (grp,typ,col,course)[category] ----
+    seat_cap = defaultdict(lambda: defaultdict(int))
     for _, r in seats.iterrows():
-        k = (r["grp"], r["typ"], r["college"], r["course"], r["category"])
-        seat_cap[k] = seat_cap.get(k, 0) + r["SEAT"]
+        base = (r["grp"], r["typ"], r["college"], r["course"])
+        seat_cap[base][r["category"]] += r["SEAT"]
 
     # =====================================================
-    # PROTECTED ADMISSION (ONLY UPTO PHASE 2)
+    # AUDIT SNAPSHOT – BEFORE CONVERSION
     # =====================================================
 
-    protected = {}
-    if phase <= 2 and prev is not None:
-        for _, r in prev.iterrows():
-            code = str(r.get("Curr_Admn", "")).upper().strip()
-            if len(code) < 9:
-                continue
-            protected[int(r["RollNo"])] = {
-                "grp": code[0],
-                "typ": code[1],
-                "course": code[2:4],
-                "college": code[4:7],
-                "cat": code[7:9],
-                "opno": int(r.get(f"OPNO_{phase-1}", 9999))
-            }
-
-    if phase == 2:
-        cand = cand[(cand["ConfirmFlag"] == "Y") | (cand["RollNo"].isin(protected))]
+    vacancy_before = []
+    for base, cats in seat_cap.items():
+        for cat, cnt in cats.items():
+            if cnt > 0:
+                vacancy_before.append({
+                    "grp": base[0], "typ": base[1],
+                    "college": base[2], "course": base[3],
+                    "SeatCategory": cat,
+                    "Vacant": cnt
+                })
 
     # =====================================================
-    # ALLOTMENT
+    # PASS 1 – NORMAL ALLOTMENT (NO CONVERSION)
     # =====================================================
 
     results = []
+    allotted = set()
 
     for _, C in cand.iterrows():
 
         roll = C["RollNo"]
 
-        # 🚫 Phase ≥3 → no options → no allotment
         if phase >= 3 and roll not in opts_by_roll:
             continue
 
-        cat = C["Category"]
-        sp3 = C["Special3"]
-        oth = C["Others"]
-
-        allotted = False
-
         for op in opts_by_roll.get(roll, []):
-
             dec = decode_opt(op["Optn"])
             if not dec:
                 continue
 
-            g, t, col, crs = dec["grp"], dec["typ"], dec["college"], dec["course"]
+            base = (dec["grp"], dec["typ"], dec["college"], dec["course"])
 
-            # ---- PD PRIORITY ----
-            if sp3 == "PD":
-                k = (g, t, col, crs, "PD")
-                if seat_cap.get(k, 0) > 0:
-                    seat_cap[k] -= 1
-                    results.append({
-                        "RollNo": roll,
-                        "LRank": C["LRank"],
-                        "College": col,
-                        "Course": crs,
-                        "SeatCategory": "PD",
-                        "OPNO": op["OPNO"],
-                        "AllotCode": make_allot_code(g, t, crs, col, "PD")
-                    })
-                    allotted = True
-                    break
-
-            # ---- SM ----
-            k = (g, t, col, crs, "SM")
-            if seat_cap.get(k, 0) > 0:
-                seat_cap[k] -= 1
+            # PD
+            if C["Special3"] == "PD" and seat_cap[base]["PD"] > 0:
+                seat_cap[base]["PD"] -= 1
+                allotted.add(roll)
                 results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": col,
-                    "Course": crs,
-                    "SeatCategory": "SM",
-                    "OPNO": op["OPNO"],
-                    "AllotCode": make_allot_code(g, t, crs, col, "SM")
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": "PD", "OPNO": op["OPNO"],
+                    "AllotCode": make_allot_code(*base, "PD")
                 })
-                allotted = True
                 break
 
-            # ---- CATEGORY + CONVERSION ----
-            for (kg, kt, kcol, kcrs, sc), cap in list(seat_cap.items()):
-                if cap <= 0:
-                    continue
-                if (kg, kt, kcol, kcrs) != (g, t, col, crs):
+            # Exact category
+            cat = C["Category"]
+            if seat_cap[base][cat] > 0:
+                seat_cap[base][cat] -= 1
+                allotted.add(roll)
+                results.append({
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": cat, "OPNO": op["OPNO"],
+                    "AllotCode": make_allot_code(*base, cat)
+                })
+                break
+
+            # SM
+            if seat_cap[base]["SM"] > 0:
+                seat_cap[base]["SM"] -= 1
+                allotted.add(roll)
+                results.append({
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": "SM", "OPNO": op["OPNO"],
+                    "AllotCode": make_allot_code(*base, "SM")
+                })
+                break
+
+    # =====================================================
+    # PASS 2 – VACANCY-BASED CONVERSION (PHASE >= 3)
+    # =====================================================
+
+    conversion_log = []
+
+    if phase >= 3:
+
+        for _, C in cand.iterrows():
+
+            roll = C["RollNo"]
+            if roll in allotted or roll not in opts_by_roll:
+                continue
+
+            for op in opts_by_roll[roll]:
+                dec = decode_opt(op["Optn"])
+                if not dec:
                     continue
 
-                chain = [sc] if phase < 3 else get_conversion_chain(sc)
+                base = (dec["grp"], dec["typ"], dec["college"], dec["course"])
 
-                for conv in chain:
-                    if not eligible_with_conversion(conv, cat, sp3, oth):
+                for seat_cat, cnt in list(seat_cap[base].items()):
+                    if cnt <= 0:
                         continue
 
-                    seat_cap[(kg, kt, kcol, kcrs, sc)] -= 1
-                    results.append({
-                        "RollNo": roll,
-                        "LRank": C["LRank"],
-                        "College": kcol,
-                        "Course": kcrs,
-                        "SeatCategory": conv,
-                        "OPNO": op["OPNO"],
-                        "AllotCode": make_allot_code(
-                            kg, kt, kcrs, kcol, conv
-                        )
-                    })
-                    allotted = True
-                    break
+                    for conv in CONVERSION_MAP.get(seat_cat, []):
+                        if eligible(conv, C["Category"], C["Special3"], C["Others"]):
 
-                if allotted:
-                    break
+                            # ---- ASSERTIONS ----
+                            assert seat_cat != "EW", "❌ EW seat illegally converted"
+                            assert seat_cap[base][seat_cat] > 0, "❌ Negative seat usage"
 
-            if allotted:
+                            seat_cap[base][seat_cat] -= 1
+                            allotted.add(roll)
+
+                            results.append({
+                                "RollNo": roll, "LRank": C["LRank"],
+                                "College": base[2], "Course": base[3],
+                                "SeatCategory": conv, "OPNO": op["OPNO"],
+                                "AllotCode": make_allot_code(*base, conv)
+                            })
+
+                            conversion_log.append({
+                                "College": base[2], "Course": base[3],
+                                "FromSeat": seat_cat,
+                                "ToSeat": conv,
+                                "RollNo": roll
+                            })
+                            break
+                    else:
+                        continue
+                    break
+                else:
+                    continue
                 break
 
-        # ---- PROTECTED ADMISSION (ONLY PHASE 1–2) ----
-        if phase <= 2 and not allotted and roll in protected:
-            cur = protected[roll]
-            k = (cur["grp"], cur["typ"], cur["college"], cur["course"], cur["cat"])
-            if seat_cap.get(k, 0) > 0:
-                seat_cap[k] -= 1
-                results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": cur["college"],
-                    "Course": cur["course"],
-                    "SeatCategory": cur["cat"],
-                    "OPNO": cur["opno"],
-                    "AllotCode": make_allot_code(
-                        cur["grp"], cur["typ"],
-                        cur["course"], cur["college"], cur["cat"]
-                    )
+    # =====================================================
+    # AUDIT SNAPSHOT – AFTER CONVERSION
+    # =====================================================
+
+    vacancy_after = []
+    for base, cats in seat_cap.items():
+        for cat, cnt in cats.items():
+            if cnt > 0:
+                vacancy_after.append({
+                    "grp": base[0], "typ": base[1],
+                    "college": base[2], "course": base[3],
+                    "SeatCategory": cat,
+                    "Vacant": cnt
                 })
 
     # =====================================================
-    # OUTPUT
+    # OUTPUTS
     # =====================================================
 
-    df = pd.DataFrame(results)
-    st.success(f"✅ Phase {phase} completed — {len(df)} seats allotted")
-    st.dataframe(df)
+    df_res = pd.DataFrame(results)
+    st.success(f"✅ Phase {phase} completed — {len(df_res)} seats allotted")
+    st.dataframe(df_res)
 
-    buf = BytesIO()
-    df.to_csv(buf, index=False)
-    buf.seek(0)
-    st.download_button(
-        "⬇ Download Result",
-        buf,
-        f"LLM_Allotment_Phase{phase}.csv",
-        "text/csv"
-    )
+    st.subheader("🧾 Vacancy Audit – Before Conversion")
+    st.dataframe(pd.DataFrame(vacancy_before))
+
+    st.subheader("🧾 Vacancy Audit – After Conversion")
+    st.dataframe(pd.DataFrame(vacancy_after))
+
+    st.subheader("🔄 Seat-wise Conversion Report")
+    st.dataframe(pd.DataFrame(conversion_log))
+
+    # Downloads
+    def dl(df, name):
+        b = BytesIO()
+        df.to_csv(b, index=False)
+        b.seek(0)
+        st.download_button(f"⬇ {name}", b, f"{name}.csv", "text/csv")
+
+    dl(df_res, "Allotment_Result")
+    dl(pd.DataFrame(vacancy_before), "Vacancy_Before")
+    dl(pd.DataFrame(vacancy_after), "Vacancy_After")
+    dl(pd.DataFrame(conversion_log), "Seat_Conversion")
 
 # =====================================================
 # RUN
