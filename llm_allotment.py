@@ -47,7 +47,7 @@ CONVERSION_MAP = {
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Final Seat Conversion Logic")
+    st.title("⚖️ LLM Counselling – Final Manual-Aligned Logic")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -95,12 +95,7 @@ def llm_allotment():
     # SEATS – ROBUST NORMALIZATION
     # =====================================================
 
-    seats.columns = (
-        seats.columns
-             .str.strip()
-             .str.upper()
-             .str.replace(" ", "")
-    )
+    seats.columns = seats.columns.str.strip().str.upper().str.replace(" ", "")
 
     COL_MAP = {
         "GRP": "grp", "GROUP": "grp",
@@ -124,18 +119,18 @@ def llm_allotment():
 
     seats["SEAT"] = pd.to_numeric(seats["SEAT"], errors="coerce").fillna(0).astype(int)
 
-    # seat_cap[(grp,typ,col,course)][category]
     seat_cap = defaultdict(lambda: defaultdict(int))
     for _, r in seats.iterrows():
         base = (r["grp"], r["typ"], r["college"], r["course"])
         seat_cap[base][r["category"]] += r["SEAT"]
 
     # =====================================================
-    # PASS 1 – NORMAL ALLOTMENT (NO CONVERSION)
+    # PASS 1 – NORMAL ALLOTMENT
     # =====================================================
 
     results = []
     allotted = set()
+    allotted_opno = {}   # 🔑 track option number
 
     for _, C in cand.iterrows():
 
@@ -154,6 +149,7 @@ def llm_allotment():
             if C["Special3"] == "PD" and seat_cap[base]["PD"] > 0:
                 seat_cap[base]["PD"] -= 1
                 allotted.add(roll)
+                allotted_opno[roll] = op["OPNO"]
                 results.append({
                     "RollNo": roll, "LRank": C["LRank"],
                     "College": base[2], "Course": base[3],
@@ -166,6 +162,7 @@ def llm_allotment():
             if seat_cap[base][C["Category"]] > 0:
                 seat_cap[base][C["Category"]] -= 1
                 allotted.add(roll)
+                allotted_opno[roll] = op["OPNO"]
                 results.append({
                     "RollNo": roll, "LRank": C["LRank"],
                     "College": base[2], "Course": base[3],
@@ -178,6 +175,7 @@ def llm_allotment():
             if seat_cap[base]["SM"] > 0:
                 seat_cap[base]["SM"] -= 1
                 allotted.add(roll)
+                allotted_opno[roll] = op["OPNO"]
                 results.append({
                     "RollNo": roll, "LRank": C["LRank"],
                     "College": base[2], "Course": base[3],
@@ -187,34 +185,30 @@ def llm_allotment():
                 break
 
     # =====================================================
-    # PASS 2 – VACANCY CONVERSION (FINAL RULE)
+    # PASS 2 – VACANCY CONVERSION (FINAL RULE SET)
     # =====================================================
 
     if phase >= 3:
 
-        # -------------------------------------------------
-        # Bases that still have demand (ANY unallotted opt)
-        # -------------------------------------------------
+        # Bases with remaining demand
         base_has_demand = set()
-
         for roll, oplist in opts_by_roll.items():
             if roll in allotted:
                 continue
             for op in oplist:
                 dec = decode_opt(op["Optn"])
-                if not dec:
-                    continue
-                base_has_demand.add(
-                    (dec["grp"], dec["typ"], dec["college"], dec["course"])
-                )
+                if dec:
+                    base_has_demand.add(
+                        (dec["grp"], dec["typ"], dec["college"], dec["course"])
+                    )
 
-        # Candidate pools per base + category
+        # Candidate pools
         cand_pool = defaultdict(lambda: defaultdict(list))
-
         for _, C in cand.iterrows():
             roll = C["RollNo"]
-            if roll in allotted or roll not in opts_by_roll:
+            if roll not in allotted or roll not in opts_by_roll:
                 continue
+            # already allotted → eligible for upgrade only
 
             for op in opts_by_roll[roll]:
                 dec = decode_opt(op["Optn"])
@@ -223,16 +217,19 @@ def llm_allotment():
 
                 base = (dec["grp"], dec["typ"], dec["college"], dec["course"])
 
+                # only higher preference allowed
+                if op["OPNO"] >= allotted_opno.get(roll, 9999):
+                    continue
+
                 cand_pool[base][C["Category"]].append((C, op))
                 if C["Others"] == "OE":
                     cand_pool[base]["OE"].append((C, op))
                 cand_pool[base]["SM"].append((C, op))
                 break
 
-        # Seat-driven conversion
         for base, cats in seat_cap.items():
 
-            # 🔑 FINAL RULE: convert only if NO demand exists
+            # 🔑 convert only if NO demand exists
             if base in base_has_demand:
                 continue
 
@@ -240,24 +237,19 @@ def llm_allotment():
                 if vacant <= 0 or seat_cat == "EW":
                     continue
 
-                conv_chain = CONVERSION_MAP.get(seat_cat, [])
-
-                for target_cat in conv_chain:
+                for target_cat in CONVERSION_MAP.get(seat_cat, []):
 
                     pool = cand_pool[base].get(target_cat, [])
                     if not pool:
                         continue
 
                     for C, op in pool:
+                        roll = C["RollNo"]
                         if cats[seat_cat] <= 0:
                             break
 
-                        roll = C["RollNo"]
-                        if roll in allotted:
-                            continue
-
                         cats[seat_cat] -= 1
-                        allotted.add(roll)
+                        allotted_opno[roll] = op["OPNO"]
 
                         results.append({
                             "RollNo": roll, "LRank": C["LRank"],
@@ -270,7 +262,7 @@ def llm_allotment():
                             )
                         })
 
-                    break  # stop after first successful category
+                    break  # stop after first valid conversion
 
     # =====================================================
     # OUTPUT
