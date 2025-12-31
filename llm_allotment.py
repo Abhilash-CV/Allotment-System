@@ -47,7 +47,7 @@ CONVERSION_MAP = {
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Correct Seat-Driven Conversion")
+    st.title("⚖️ LLM Counselling – Seat-Driven Conversion (Final)")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -92,18 +92,32 @@ def llm_allotment():
             opts_by_roll[r["RollNo"]].append(r)
 
     # =====================================================
-    # SEATS (INDEXED)
+    # SEATS – ROBUST NORMALIZATION (FIXED)
     # =====================================================
 
-    seats.columns = seats.columns.str.strip().str.upper().str.replace(" ", "")
-    seats = seats.rename(columns={
-        "GROUP": "grp", "GRP": "grp",
-        "TYPE": "typ",
-        "COLLEGECODE": "college",
-        "COURSECODE": "course",
+    seats.columns = (
+        seats.columns
+             .str.strip()
+             .str.upper()
+             .str.replace(" ", "")
+    )
+
+    COL_MAP = {
+        "GRP": "grp", "GROUP": "grp",
+        "TYP": "typ", "TYPE": "typ",
+        "COLLEGE": "college", "COLLEGECODE": "college",
+        "COURSE": "course", "COURSECODE": "course",
         "CATEGORY": "category",
-        "SEAT": "SEAT"
-    })
+        "SEAT": "SEAT", "SEATS": "SEAT",
+    }
+
+    seats = seats.rename(columns={c: COL_MAP[c] for c in seats.columns if c in COL_MAP})
+
+    required = {"grp", "typ", "college", "course", "category", "SEAT"}
+    missing = required - set(seats.columns)
+    if missing:
+        st.error(f"❌ Seat Matrix missing columns: {', '.join(sorted(missing))}")
+        st.stop()
 
     for c in ["grp", "typ", "college", "course", "category"]:
         seats[c] = seats[c].astype(str).str.upper().str.strip()
@@ -124,8 +138,8 @@ def llm_allotment():
     allotted = set()
 
     for _, C in cand.iterrows():
-        roll = C["RollNo"]
 
+        roll = C["RollNo"]
         if phase >= 3 and roll not in opts_by_roll:
             continue
 
@@ -141,12 +155,9 @@ def llm_allotment():
                 seat_cap[base]["PD"] -= 1
                 allotted.add(roll)
                 results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": base[2],
-                    "Course": base[3],
-                    "SeatCategory": "PD",
-                    "OPNO": op["OPNO"],
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": "PD", "OPNO": op["OPNO"],
                     "AllotCode": make_allot_code(*base, "PD")
                 })
                 break
@@ -156,38 +167,32 @@ def llm_allotment():
                 seat_cap[base][C["Category"]] -= 1
                 allotted.add(roll)
                 results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": base[2],
-                    "Course": base[3],
-                    "SeatCategory": C["Category"],
-                    "OPNO": op["OPNO"],
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": C["Category"], "OPNO": op["OPNO"],
                     "AllotCode": make_allot_code(*base, C["Category"])
                 })
                 break
 
-            # SM
+            # SM (open)
             if seat_cap[base]["SM"] > 0:
                 seat_cap[base]["SM"] -= 1
                 allotted.add(roll)
                 results.append({
-                    "RollNo": roll,
-                    "LRank": C["LRank"],
-                    "College": base[2],
-                    "Course": base[3],
-                    "SeatCategory": "SM",
-                    "OPNO": op["OPNO"],
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": "SM", "OPNO": op["OPNO"],
                     "AllotCode": make_allot_code(*base, "SM")
                 })
                 break
 
     # =====================================================
-    # PASS 2 – VACANCY CONVERSION (FINAL, CORRECT)
+    # PASS 2 – VACANCY CONVERSION (SEAT-FIRST, EXHAUSTION-AWARE)
     # =====================================================
 
     if phase >= 3:
 
-        # Build candidate pools PER BASE + CATEGORY
+        # Build candidate pools per base + category
         cand_pool = defaultdict(lambda: defaultdict(list))
 
         for _, C in cand.iterrows():
@@ -208,7 +213,7 @@ def llm_allotment():
                 cand_pool[base]["SM"].append((C, op))
                 break
 
-        # Seat-first, category-isolated conversion
+        # Seat-driven conversion
         for base, cats in seat_cap.items():
 
             for seat_cat, vacant in list(cats.items()):
@@ -235,12 +240,9 @@ def llm_allotment():
                         allotted.add(roll)
 
                         results.append({
-                            "RollNo": roll,
-                            "LRank": C["LRank"],
-                            "College": base[2],
-                            "Course": base[3],
-                            "SeatCategory": target_cat,
-                            "OPNO": op["OPNO"],
+                            "RollNo": roll, "LRank": C["LRank"],
+                            "College": base[2], "Course": base[3],
+                            "SeatCategory": target_cat, "OPNO": op["OPNO"],
                             "AllotCode": make_allot_code(
                                 base[0], base[1],
                                 base[3], base[2],
@@ -248,7 +250,7 @@ def llm_allotment():
                             )
                         })
 
-                    break  # STOP after first successful category
+                    break  # stop after first successful category
 
     # =====================================================
     # OUTPUT
