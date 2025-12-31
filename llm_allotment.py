@@ -28,7 +28,7 @@ def make_allot_code(g, t, c, col, cat):
     return f"{g}{t}{c}{col}{c2}{c2}"
 
 # =====================================================
-# CONVERSION POLICY (PHASE >= 3)
+# CONVERSION POLICY
 # =====================================================
 
 CONVERSION_MAP = {
@@ -47,7 +47,7 @@ CONVERSION_MAP = {
 
 def llm_allotment():
 
-    st.title("⚖️ LLM Counselling – Final Manual-Aligned Logic")
+    st.title("⚖️ LLM Counselling – Manual-Aligned Final Logic")
 
     phase = st.selectbox("Phase", [1, 2, 3, 4])
 
@@ -92,7 +92,7 @@ def llm_allotment():
             opts_by_roll[r["RollNo"]].append(r)
 
     # =====================================================
-    # SEATS – ROBUST NORMALIZATION
+    # SEATS – NORMALIZATION
     # =====================================================
 
     seats.columns = seats.columns.str.strip().str.upper().str.replace(" ", "")
@@ -130,7 +130,7 @@ def llm_allotment():
 
     results = []
     allotted = set()
-    allotted_opno = {}   # 🔑 track option number
+    allotted_opno = {}
 
     for _, C in cand.iterrows():
 
@@ -139,6 +139,7 @@ def llm_allotment():
             continue
 
         for op in opts_by_roll.get(roll, []):
+
             dec = decode_opt(op["Optn"])
             if not dec:
                 continue
@@ -185,12 +186,12 @@ def llm_allotment():
                 break
 
     # =====================================================
-    # PASS 2 – VACANCY CONVERSION (FINAL RULE SET)
+    # PASS 2 – VACANT SEAT UPGRADE (FINAL)
     # =====================================================
 
     if phase >= 3:
 
-        # Bases with remaining demand
+        # Bases that still have demand from UNALLOTTED candidates
         base_has_demand = set()
         for roll, oplist in opts_by_roll.items():
             if roll in allotted:
@@ -202,67 +203,68 @@ def llm_allotment():
                         (dec["grp"], dec["typ"], dec["college"], dec["course"])
                     )
 
-        # Candidate pools
-        cand_pool = defaultdict(lambda: defaultdict(list))
+        # Upgrade only
         for _, C in cand.iterrows():
-            roll = C["RollNo"]
-            if roll not in allotted or roll not in opts_by_roll:
-                continue
-            # already allotted → eligible for upgrade only
 
-            for op in opts_by_roll[roll]:
+            roll = C["RollNo"]
+            if roll not in allotted:
+                continue
+
+            prev_opno = allotted_opno.get(roll, 9999)
+
+            for op in opts_by_roll.get(roll, []):
+
+                # must be higher preference
+                if op["OPNO"] >= prev_opno:
+                    continue
+
                 dec = decode_opt(op["Optn"])
                 if not dec:
                     continue
 
                 base = (dec["grp"], dec["typ"], dec["college"], dec["course"])
 
-                # only higher preference allowed
-                if op["OPNO"] >= allotted_opno.get(roll, 9999):
+                # block if any unallotted demand exists
+                if base in base_has_demand:
                     continue
 
-                cand_pool[base][C["Category"]].append((C, op))
-                if C["Others"] == "OE":
-                    cand_pool[base]["OE"].append((C, op))
-                cand_pool[base]["SM"].append((C, op))
-                break
+                cats = seat_cap.get(base, {})
+                chosen_cat = None
 
-        for base, cats in seat_cap.items():
-
-            # 🔑 convert only if NO demand exists
-            if base in base_has_demand:
-                continue
-
-            for seat_cat, vacant in list(cats.items()):
-                if vacant <= 0 or seat_cat == "EW":
-                    continue
-
-                for target_cat in CONVERSION_MAP.get(seat_cat, []):
-
-                    pool = cand_pool[base].get(target_cat, [])
-                    if not pool:
-                        continue
-
-                    for C, op in pool:
-                        roll = C["RollNo"]
-                        if cats[seat_cat] <= 0:
+                # priority: exact → SM → converted
+                if cats.get(C["Category"], 0) > 0:
+                    chosen_cat = C["Category"]
+                elif cats.get("SM", 0) > 0:
+                    chosen_cat = "SM"
+                else:
+                    for sc, cnt in cats.items():
+                        if cnt > 0 and sc != "EW":
+                            for tgt in CONVERSION_MAP.get(sc, []):
+                                if tgt in ("SM", C["Category"]):
+                                    chosen_cat = tgt
+                                    break
+                        if chosen_cat:
                             break
 
-                        cats[seat_cat] -= 1
-                        allotted_opno[roll] = op["OPNO"]
+                if not chosen_cat:
+                    continue
 
-                        results.append({
-                            "RollNo": roll, "LRank": C["LRank"],
-                            "College": base[2], "Course": base[3],
-                            "SeatCategory": target_cat, "OPNO": op["OPNO"],
-                            "AllotCode": make_allot_code(
-                                base[0], base[1],
-                                base[3], base[2],
-                                target_cat
-                            )
-                        })
+                # APPLY UPGRADE
+                cats[chosen_cat] -= 1
+                allotted_opno[roll] = op["OPNO"]
 
-                    break  # stop after first valid conversion
+                results.append({
+                    "RollNo": roll, "LRank": C["LRank"],
+                    "College": base[2], "Course": base[3],
+                    "SeatCategory": chosen_cat, "OPNO": op["OPNO"],
+                    "AllotCode": make_allot_code(
+                        base[0], base[1],
+                        base[3], base[2],
+                        chosen_cat
+                    )
+                })
+
+                break  # only one upgrade per candidate
 
     # =====================================================
     # OUTPUT
