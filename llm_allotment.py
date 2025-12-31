@@ -216,69 +216,66 @@ def llm_allotment():
     # =====================================================
 
     conversion_log = []
+    # =====================================================
+# PASS 2 – VACANCY CONVERSION (CORRECT, FINAL)
+# =====================================================
+
     if phase >= 3:
     
-        # Unallotted candidates with options
-        pending = cand[
-            (~cand["RollNo"].isin(allotted)) &
-            (cand["RollNo"].isin(opts_by_roll))
-        ]
+        # Index unallotted candidates by base + category
+        cand_index = defaultdict(lambda: defaultdict(list))
     
-        # Iterate seats FIRST
+        for _, C in cand.iterrows():
+            roll = C["RollNo"]
+            if roll in allotted:
+                continue
+            if roll not in opts_by_roll:
+                continue
+    
+            for op in opts_by_roll[roll]:
+                dec = decode_opt(op["Optn"])
+                if not dec:
+                    continue
+    
+                base = (dec["grp"], dec["typ"], dec["college"], dec["course"])
+    
+                cand_index[base][C["Category"]].append((C, op))
+                if C["Others"] == "OE":
+                    cand_index[base]["OE"].append((C, op))
+                cand_index[base]["SM"].append((C, op))
+                if C["Special3"] == "PD":
+                    cand_index[base]["PD"].append((C, op))
+    
+                break  # only first valid option per base
+    
+        # Process seats BASE-FIRST, CATEGORY-FIRST
         for base, cats in seat_cap.items():
     
             for seat_cat, vacant in list(cats.items()):
     
                 if vacant <= 0:
                     continue
-    
-                conv_chain = [seat_cat] + CONVERSION_MAP.get(seat_cat, [])
                 if seat_cat == "EW":
                     continue
     
-                # Try each conversion category ONLY after exhaustion
+                conv_chain = CONVERSION_MAP.get(seat_cat, [])
+                if not conv_chain:
+                    continue
+    
                 for target_cat in conv_chain:
     
-                    # Find eligible candidates for THIS category
-                    elig = []
+                    pool = cand_index[base].get(target_cat, [])
     
-                    for _, C in pending.iterrows():
+                    if not pool:
+                        continue  # exhaustion gate
     
-                        roll = C["RollNo"]
-    
-                        # must have option for this base
-                        valid_opt = None
-                        for op in opts_by_roll[roll]:
-                            dec = decode_opt(op["Optn"])
-                            if dec and (
-                                dec["grp"], dec["typ"],
-                                dec["college"], dec["course"]
-                            ) == base:
-                                valid_opt = op
-                                break
-    
-                        if not valid_opt:
-                            continue
-    
-                        if eligible(
-                            target_cat,
-                            C["Category"],
-                            C["Special3"],
-                            C["Others"]
-                        ):
-                            elig.append((C, valid_opt))
-    
-                    # 🔑 EXHAUSTION RULE
-                    if not elig:
-                        continue   # try next category ONLY if none exist
-    
-                    # Allot seats to this category
-                    for C, op in elig:
-    
+                    for C, op in pool:
                         if cats[seat_cat] <= 0:
                             break
     
                         roll = C["RollNo"]
+                        if roll in allotted:
+                            continue
     
                         cats[seat_cat] -= 1
                         allotted.add(roll)
@@ -297,11 +294,8 @@ def llm_allotment():
                             )
                         })
     
-                    # refresh pending after allotment
-                    pending = pending[~pending["RollNo"].isin(allotted)]
-    
-                    # move to next seat category
-                    break
+                    break  # STOP conversion after first successful category
+
 
     # =====================================================
     # AUDIT SNAPSHOT – AFTER CONVERSION
